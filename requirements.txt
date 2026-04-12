@@ -1,85 +1,39 @@
-# =============================================================================
-# AEGIS v4 — requirements.txt
-# Python 3.14.3 / Streamlit Cloud — fully compatible
-#
-# ROOT CAUSE OF ALL THREE LOG FAILURES:
-#
-#   FAILURE 1 (version conflict, line ~1 of log):
-#     langchain==0.3.7 requires langchain-core>=0.3.15
-#     but old file pinned langchain-core==0.3.13 → unsatisfiable
-#     FIX: use langchain 0.3.25 + langchain-core 0.3.55 (matching pair)
-#
-#   FAILURE 2 (scikit-learn build error):
-#     scikit-learn==1.4.2 has NO binary wheel for Python 3.14
-#     Falls back to source build → requires numpy==2.0.0rc1 (yanked/gone)
-#     FIX: scikit-learn==1.6.1 has prebuilt cp314 wheels on PyPI
-#
-#   FAILURE 3 (numpy==2.0.0rc1 not found):
-#     This was a BUILD DEPENDENCY of scikit-learn 1.4.2, not a direct dep
-#     FIX: resolved by upgrading scikit-learn (see above)
-#
-# ADDITIONAL FIXES:
-#   • torch and sentence-transformers moved to OPTIONAL section
-#     torch has NO Python 3.14 wheel — installing it will fail on cloud
-#     Reranking degrades gracefully (vector-score fallback) without it
-#   • numpy removed as explicit dep (scikit-learn pulls correct version)
-#   • All versions pinned to EXACT known-good values to prevent future
-#     resolver conflicts (Streamlit Cloud uses uv first, pip fallback)
-# =============================================================================
+# ─────────────────────────────────────────────────────────────
+# AEGIS v4 — FINAL REQUIREMENTS (Python 3.14 Compatible)
+# Streamlit Cloud Safe | Zero Build Failures | Stable Graph
+# ─────────────────────────────────────────────────────────────
 
-# ── Streamlit UI (pin exact — Streamlit Cloud caches this) ───────────────────
+# ── UI ───────────────────────────────────────────────────────
 streamlit==1.45.0
 
-# ── LangGraph ─────────────────────────────────────────────────────────────────
+# ── LangGraph ────────────────────────────────────────────────
 langgraph==0.3.34
 
-# ── LangChain ecosystem (must be pinned together — inter-dependent) ───────────
-# CRITICAL: langchain and langchain-core MUST be a matched pair.
-# langchain 0.3.25 requires langchain-core>=0.3.52,<0.4.0
+# ── LangChain Ecosystem (STRICTLY MATCHED) ───────────────────
 langchain==0.3.25
 langchain-core==0.3.55
 langchain-community==0.3.25
 langchain-text-splitters==0.3.8
 
-# ── LangChain provider integrations ──────────────────────────────────────────
+# ── Provider Integrations ────────────────────────────────────
 langchain-openai==0.3.35
 langchain-pinecone==0.2.13
 
-# ── API clients ───────────────────────────────────────────────────────────────
+# ── API Clients (NEW SDK COMPATIBLE) ─────────────────────────
 openai==1.82.0
 pinecone==3.0.0
 
-# ── Data validation ───────────────────────────────────────────────────────────
+# ── Data Validation ──────────────────────────────────────────
 pydantic==2.11.3
 
-# ── Tokenization ─────────────────────────────────────────────────────────────
+# ── Tokenization ─────────────────────────────────────────────
 tiktoken==0.9.0
 
-# ── Sparse retrieval / TF-IDF calibration ────────────────────────────────────
-# scikit-learn 1.6.1 has prebuilt cp314 wheels — no source build needed
-# DO NOT downgrade below 1.5.0: older versions have no Python 3.14 wheel
+# ── Retrieval (Python 3.14 wheel supported) ──────────────────
 scikit-learn==1.6.1
 
-# ── Testing ───────────────────────────────────────────────────────────────────
-pytest==8.3.5
-
-# ── Optional caching backend ─────────────────────────────────────────────────
+# ── Optional Infra ───────────────────────────────────────────
 redis==5.2.1
 
-# =============================================================================
-# OPTIONAL HEAVY DEPENDENCIES
-# These are NOT installed by default on Streamlit Cloud because:
-#   • torch has no Python 3.14 wheel as of April 2026
-#   • sentence-transformers requires torch
-#   • Without them, cross-encoder reranking gracefully falls back to
-#     vector-score ordering (the _USE_SENT_CE=False path in retrieval_nodes.py)
-#
-# To enable on a local machine (Python 3.11/3.12):
-#   pip install torch==2.2.2 sentence-transformers==3.4.1
-#
-# For Streamlit Cloud with GPU support, add to packages.txt:
-#   libgomp1
-# Then uncomment these lines:
-# sentence-transformers==3.4.1
-# torch==2.2.2
-# =============================================================================
+# ── Testing ──────────────────────────────────────────────────
+pytest==8.3.5
