@@ -1,14 +1,17 @@
-import os
-import streamlit as st
-
-os.environ["OPENAI_API_KEY"] = st.secrets["OPENAI_API_KEY"]
-os.environ["PINECONE_API_KEY"] = st.secrets["PINECONE_API_KEY"]# =============================================================================
+# =============================================================================
 # AEGIS — ENTERPRISE RAG SYSTEM  |  Streamlit UI  (LangGraph Edition)
 # =============================================================================
 
 from __future__ import annotations
-import os, tempfile, time
+
+import os
+import tempfile
+import time
 import streamlit as st
+
+# 🔑 Load secrets BEFORE anything else
+os.environ["OPENAI_API_KEY"] = st.secrets["OPENAI_API_KEY"]
+os.environ["PINECONE_API_KEY"] = st.secrets["PINECONE_API_KEY"]
 
 from utils import clean_text, load_txt_file, truncate, format_date
 
