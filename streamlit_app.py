@@ -1,7 +1,22 @@
 # =============================================================================
 # AEGIS — ENTERPRISE RAG SYSTEM  |  Streamlit UI  (LangGraph Edition)
 # =============================================================================
+import streamlit as st
+from graph import run_query
 
+st.set_page_config(page_title="AEGIS RAG", layout="wide")
+
+st.title("🛡️ AEGIS - RAG System")
+
+query = st.text_input("Ask something:")
+
+if query:
+    with st.spinner("Processing..."):
+        try:
+            result = run_query(query)
+            st.success(result)
+        except Exception as e:
+            st.error(f"Error: {str(e)}")
 from __future__ import annotations
 import os, tempfile, time
 import streamlit as st
