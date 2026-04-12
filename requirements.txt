@@ -40,7 +40,7 @@ numpy>=1.26.0                   # Required by scikit-learn; explicit pin avoids 
 sentence-transformers>=2.7.0,<4.0.0
 # torch: Install CPU version on cloud VMs to avoid 2GB+ download
 # Streamlit Cloud: add to packages.txt: libgomp1
-torch>=2.2.2
+
 
 # ── Streamlit UI ─────────────────────────────────────────────────────────────
 streamlit>=1.35.0
