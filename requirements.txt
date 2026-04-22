@@ -1,5 +1,6 @@
 streamlit
-
+langchain-pinecone
+pinecone-client
 langchain
 langchain-core
 langchain-community
