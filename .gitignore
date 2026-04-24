@@ -1,0 +1,13 @@
+.env
+*.key
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+data/policy.db
+data/chroma/
+/tmp/
+*.pkl
+.vscode/
+.idea/
+.DS_Store
