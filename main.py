@@ -1,4 +1,10 @@
-"""Main entry point — CLI / API / UI modes."""
+# streamlit_app.py
+
+import streamlit as st
+
+st.title("AEGIS RAG System")
+
+st.success("App booted successfully")"""Main entry point — CLI / API / UI modes."""
 import argparse, asyncio, logging, os
 from dotenv import load_dotenv; load_dotenv()
 
