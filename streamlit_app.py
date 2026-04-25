@@ -7,6 +7,13 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(__file__))))
 from dotenv import load_dotenv; load_dotenv()
 
 import streamlit as st
+from app.core.models import get_chat_model, get_embed_model
+
+llm = ChatOpenAI(model=get_chat_model(), temperature=0)
+
+# Fail fast if invalid
+CHAT_MODEL = get_chat_model()
+EMBED_MODEL = get_embed_model()
 from app.graph.workflow import build_graph
 from app.utils.pickle_cache import PickleCache
 from app.utils.encryption import encrypt, decrypt
