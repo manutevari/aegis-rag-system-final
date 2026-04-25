@@ -7,7 +7,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(__file__))))
 from dotenv import load_dotenv; load_dotenv()
 
 import streamlit as st
-ffrom app.core.models import get_chat_model, get_embed_model
+from app.core.models import get_chat_model, get_embed_model
 
 CHAT_MODEL = get_chat_model()
 EMBED_MODEL = get_embed_model()
