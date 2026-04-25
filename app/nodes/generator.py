@@ -24,6 +24,20 @@ STRICT RULES:
 6. End with: Source: [policy name/code] — if available."""
 
 
+# ── SAFE INVOKE (ADDED) ───────────────────────────────────────────────────────
+
+def safe_invoke(llm, msgs):
+    for i in range(2):
+        try:
+            return llm.invoke(msgs)
+        except Exception as e:
+            if "429" in str(e):
+                time.sleep(2 ** i)
+            else:
+                raise
+    raise Exception("LLM failed")
+
+
 # ── LLM INVOCATION WITH FALLBACK ──────────────────────────────────────────────
 
 def invoke_with_fallback(msgs):
@@ -43,29 +57,14 @@ def invoke_with_fallback(msgs):
         api_key=os.getenv("OPENROUTER_API_KEY"),
     )
 
-    # Try primary (with retry)
-    for i in range(2):
-        try:
-            return primary.invoke(msgs)
-        except Exception as e:
-            logger.warning(f"Primary LLM failed (attempt {i+1}): {e}")
-            if "429" in str(e):
-                time.sleep(2 ** i)
-            else:
-                break
+    # Try primary (with retry via safe_invoke)
+    try:
+        return safe_invoke(primary, msgs)
+    except Exception as e:
+        logger.warning(f"Primary LLM failed, switching to fallback: {e}")
 
-    # Fallback to OpenRouter
-    for i in range(2):
-        try:
-            return fallback.invoke(msgs)
-        except Exception as e:
-            logger.warning(f"Fallback LLM failed (attempt {i+1}): {e}")
-            if "429" in str(e):
-                time.sleep(2 ** i)
-            else:
-                raise
-
-    raise Exception("Both primary and fallback LLM failed")
+    # Fallback to OpenRouter (with retry)
+    return safe_invoke(fallback, msgs)
 
 
 # ── MAIN NODE ─────────────────────────────────────────────────────────────────
