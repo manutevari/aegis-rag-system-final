@@ -14,10 +14,9 @@ CHROMA_DIR   = os.getenv("CHROMA_DIR", "/tmp/dg_rag_chroma")
 
 
 def _embeddings():
+    from app.core.models import get_embed_model
     from langchain_openai import OpenAIEmbeddings
-    return from app.core.models import get_embed_model
-
-OpenAIEmbeddings(model=get_embed_model())
+    return OpenAIEmbeddings(model=get_embed_model())
 
 
 def _load_docs():
