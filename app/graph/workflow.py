@@ -1,19 +1,5 @@
 """
 LangGraph Workflow — Decision-Grade RAG backbone.
-
-Full node map (matches architecture diagram):
-  START
-    └─► planner ──(route)──► sql ──► compute ──► context_assembler
-                         └─► retrieval ──────────► context_assembler
-                         └─► direct ─────────────► context_assembler
-    context_assembler ──► token_check
-       ├─(summarize)──► summarize_context ──► generate
-       └─(proceed) ─────────────────────────► generate
-    generate ──► verify
-       ├─(valid) ──► hitl
-       │                ├─(approve/edit) ──► encrypt ──► decrypt ──► trace ──► END
-       │                └─(reject) ──────────────────────────────────► planner (retry)
-       └─(invalid) ──────────────────────────────────────────────────► planner (retry)
 """
 
 import logging
@@ -25,6 +11,11 @@ from app.nodes import (
     context_assembler, token_manager,
     generator, verifier, hitl,
     encrypt_node, decrypt_node, trace_node,
+
+    # ✅ NEW NODES (you must create these)
+    numpy_node,
+    pandas_node,
+    plot_node,
 )
 
 logger = logging.getLogger(__name__)
@@ -56,11 +47,17 @@ def _route_after_hitl(state: AgentState) -> str:
 def build_graph() -> StateGraph:
     b = StateGraph(AgentState)
 
-    # Nodes
+    # ── Core Nodes ──
     b.add_node("planner",           planner.run)
     b.add_node("retrieval",         retrieval.run)
     b.add_node("sql",               sql_tool.run)
     b.add_node("compute",           compute.run)
+
+    # ✅ NEW TOOL NODES
+    b.add_node("numpy_compute",     numpy_node.run)
+    b.add_node("pandas_query",      pandas_node.run)
+    b.add_node("plot_chart",        plot_node.run)
+
     b.add_node("context_assembler", context_assembler.run)
     b.add_node("token_check",       token_manager.run)
     b.add_node("summarize_context", token_manager.summarize)
@@ -74,43 +71,71 @@ def build_graph() -> StateGraph:
     # Entry
     b.set_entry_point("planner")
 
-    # Planner → tool routing
+    # ── Planner → Routing ──
     b.add_conditional_edges(
         "planner", _route_after_planner,
-        {"sql": "sql", "retrieval": "retrieval", "compute": "compute", "direct": "context_assembler"},
+        {
+            "sql": "sql",
+            "retrieval": "retrieval",
+            "compute": "compute",
+            "direct": "context_assembler",
+
+            # ✅ NEW ROUTES
+            "numpy_compute": "numpy_compute",
+            "pandas_query": "pandas_query",
+            "plot_chart": "plot_chart",
+        },
     )
 
-    # Tool convergence to context
+    # ── Tool convergence ──
     b.add_edge("retrieval", "context_assembler")
-    b.add_edge("sql",       "compute")          # SQL always feeds compute for numerical grounding
-    b.add_edge("compute",   "context_assembler")
 
-    # Context → token gate
+    b.add_edge("sql", "compute")
+    b.add_edge("compute", "context_assembler")
+
+    # ✅ NEW TOOL FLOWS
+    b.add_edge("numpy_compute", "context_assembler")
+    b.add_edge("pandas_query",  "context_assembler")
+    b.add_edge("plot_chart",    "context_assembler")
+
+    # ── Context → Token ──
     b.add_edge("context_assembler", "token_check")
+
     b.add_conditional_edges(
         "token_check", _route_after_token,
-        {"summarize": "summarize_context", "proceed": "generate"},
+        {
+            "summarize": "summarize_context",
+            "proceed": "generate",
+        },
     )
+
     b.add_edge("summarize_context", "generate")
 
-    # Generate → verify
+    # ── Generate → Verify ──
     b.add_edge("generate", "verify")
 
-    # Verify → HITL or retry
+    # ── Verify → HITL / Retry ──
     b.add_conditional_edges(
         "verify", _route_after_verify,
-        {"valid": "hitl", "invalid": "planner"},
+        {
+            "valid": "hitl",
+            "invalid": "planner",
+        },
     )
 
-    # HITL → final path or retry
+    # ── HITL → Final / Retry ──
     b.add_conditional_edges(
         "hitl", _route_after_hitl,
-        {"end_ok": "encrypt", "retry": "planner", "end_failed": "trace"},
+        {
+            "end_ok": "encrypt",
+            "retry": "planner",
+            "end_failed": "trace",
+        },
     )
 
-    # Final pipeline
+    # ── Final chain ──
     b.add_edge("encrypt", "decrypt")
     b.add_edge("decrypt", "trace")
-    b.add_edge("trace",   END)
+    b.add_edge("trace", END)
 
     return b.compile()
