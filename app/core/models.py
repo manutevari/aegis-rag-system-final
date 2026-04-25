@@ -1,6 +1,6 @@
 import os
 from langchain.chat_models import init_chat_model
-from langchain.embeddings import OpenAIEmbeddings
+from langchain_openai import OpenAIEmbeddings
 
 # 🔹 Import middleware (adjust path if needed)
 from middleware import orchestrator_middleware
