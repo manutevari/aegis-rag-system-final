@@ -60,3 +60,32 @@ def fallback_calculation(nums: Dict[str, Any]) -> Tuple[Optional[float], List[st
         return approx, [f"{approx_reason} Approximated using multiplication: {numbers[0]} × {numbers[1]} = {approx}"]
 
     return None, [f"{approx_reason} Unable to compute due to insufficient data."]
+
+
+# ✅ ADDED FUNCTION (as requested)
+
+def compute_travel_allowance(rows, nums):
+    total = 0.0
+    steps = []
+
+    days = nums.get("days", 0)
+    nights = nums.get("nights", days)
+
+    for row in rows:
+        cat = (row.get("category") or "").lower()
+
+        if cat in ("meal", "per_diem") and row.get("per_day_inr"):
+            amt = round(days * row["per_day_inr"], 2)
+            total += amt
+            steps.append(f"Meals: ₹{amt}")
+
+        elif cat == "hotel" and row.get("per_night_inr"):
+            amt = round(nights * row["per_night_inr"], 2)
+            total += amt
+            steps.append(f"Hotel: ₹{amt}")
+
+    if total == 0:
+        return None, []
+
+    steps.append(f"TOTAL: ₹{total}")
+    return total, steps
