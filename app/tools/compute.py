@@ -4,7 +4,7 @@ from typing import Any, Dict, List, Optional, Tuple
 # ✅ ADD THIS BLOCK HERE (exactly here)
 from langchain.tools import tool
 import math, re
-
+@tool
 def calculator(expression: str) -> str:
     """MANDATORY: use for ALL numeric calculations"""
     try:
