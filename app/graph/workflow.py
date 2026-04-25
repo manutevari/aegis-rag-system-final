@@ -19,7 +19,7 @@ Full node map (matches architecture diagram):
 import logging
 from langgraph.graph import StateGraph, END
 
-from app.state import AgentState
+from state import AgentState
 from app.nodes import (
     planner, retrieval, sql_tool, compute,
     context_assembler, token_manager,
