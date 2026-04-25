@@ -3,7 +3,10 @@ Streamlit UI — Decision-Grade RAG Chatbot
 Features: chat history · execution trace viewer · HITL review panel · cache stats
 """
 import asyncio, os, sys, time
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(__file__))))
+
+# ✅ FIX IMPORT PATH (ONLY CHANGE)
+sys.path.append(os.getcwd())
+
 from dotenv import load_dotenv; load_dotenv()
 
 import streamlit as st
@@ -15,6 +18,7 @@ EMBED_MODEL = get_embed_model()
 # Fail fast if invalid
 CHAT_MODEL = get_chat_model()
 EMBED_MODEL = get_embed_model()
+
 from app.graph.workflow import build_graph
 from app.utils.pickle_cache import PickleCache
 from app.utils.encryption import encrypt, decrypt
