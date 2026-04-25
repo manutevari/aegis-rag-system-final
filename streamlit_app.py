@@ -1,3 +1,5 @@
+import sys, os
+sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 """
 Streamlit UI — Decision-Grade RAG Chatbot
 Features: chat history · execution trace viewer · HITL review panel · cache stats
@@ -78,8 +80,8 @@ with col_chat:
             if "verified" in m:
                 cls, lbl = ("ok-tag","✓ Verified") if m["verified"] else ("fail-tag","⚠ Unverified")
                 st.markdown(f'<span class="{cls}">{lbl}</span>', unsafe_allow_html=True)
-
-    prefill = st.session_state.pop("_prefill", "")
+    prefill = st.session_state.get("_prefill", "")
+    st.session_state["_prefill"] = ""
     query   = st.chat_input("Ask about any corporate policy…") or prefill
     if query:
         st.session_state.messages.append({"role":"user","content":query})
@@ -95,7 +97,7 @@ with col_chat:
                     history = [{"role":m["role"],"content":m["content"]} for m in st.session_state.messages[-8:]]
                     init_state = {"query":query,"history":history,"trace_log":[],"retry_count":0}
                     if grade_override: init_state["employee_grade"] = grade_override.strip().upper()
-                    result      = asyncio.run(graph.ainvoke(init_state))
+                    result = asyncio.get_event_loop().run_until_complete(graph.ainvoke(init_state))
                     answer      = result.get("answer","No answer generated.")
                     sources     = result.get("sources",[])
                     verified    = result.get("verified",False)
