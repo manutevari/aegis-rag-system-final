@@ -7,9 +7,9 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(__file__))))
 from dotenv import load_dotenv; load_dotenv()
 
 import streamlit as st
-from app.graph.workflow import build_graph
-from app.utils.pickle_cache import PickleCache
-from app.utils.encryption import encrypt, decrypt
+from workflow import build_graph
+from pickle_cache import PickleCache
+from encryption import encrypt, decrypt
 
 st.set_page_config(page_title="Policy RAG", page_icon="🏢", layout="wide", initial_sidebar_state="expanded")
 st.markdown("""<style>
@@ -83,7 +83,10 @@ with col_chat:
                     history = [{"role":m["role"],"content":m["content"]} for m in st.session_state.messages[-8:]]
                     init_state = {"query":query,"history":history,"trace_log":[],"retry_count":0}
                     if grade_override: init_state["employee_grade"] = grade_override.strip().upper()
-                    result      = asyncio.run(graph.ainvoke(init_state))
+                    import asyncio
+loop = asyncio.new_event_loop()
+asyncio.set_event_loop(loop)
+result = loop.run_until_complete(graph.ainvoke(init_state))
                     answer      = result.get("answer","No answer generated.")
                     sources     = result.get("sources",[])
                     verified    = result.get("verified",False)
