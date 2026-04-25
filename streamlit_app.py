@@ -7,9 +7,10 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(__file__))))
 from dotenv import load_dotenv; load_dotenv()
 
 import streamlit as st
-from app.core.models import get_chat_model, get_embed_model
+ffrom app.core.models import get_chat_model, get_embed_model
 
-llm = ChatOpenAI(model=get_chat_model(), temperature=0)
+CHAT_MODEL = get_chat_model()
+EMBED_MODEL = get_embed_model()
 
 # Fail fast if invalid
 CHAT_MODEL = get_chat_model()
