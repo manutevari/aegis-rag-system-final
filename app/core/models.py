@@ -1,44 +1,48 @@
 """
-Unified Model Manager — FINAL (stable + retry-aware)
+Unified Model Manager — FINAL (OpenRouter → OpenAI fallback, strict models)
 """
 
 import os
+import time
 import logging
 from typing import Dict, Any
-from langchain_openai import ChatOpenAI, OpenAIEmbeddings
+from openai import OpenAI
+from langchain_openai import OpenAIEmbeddings
 
 logger = logging.getLogger(__name__)
 
 
 # ==============================
-# 🔹 Allowed Models
+# 🔹 STRICT MODEL CONFIG
 # ==============================
 
-ALLOWED_CHAT_MODELS = {
+OPENROUTER_MODELS = [
+    "nvidia/nemotron-3-super-120b",
+    "meta-llama/llama-3.3-70b-instruct",
+    "deepseek/deepseek-r1",
+    "openai/gpt-oss-120b",
+    "qwen/qwen3-next-80b",
+]
+
+OPENAI_MODELS = [
     "gpt-5-nano",
     "gpt-5-mini",
     "gpt-4o-mini",
-}
+]
 
-ALLOWED_EMBED_MODELS = {
-    "text-embedding-3-small",
+OPENAI_EMBED_MODELS = [
     "text-embedding-3-large",
-}
+    "text-embedding-3-small",
+]
 
-DEFAULT_CHAT_MODEL = "gpt-4o-mini"
 DEFAULT_EMBED_MODEL = "text-embedding-3-small"
 
 
 # ==============================
-# 🔹 SAFE ENV LOADER (UPDATED)
+# 🔹 SAFE KEY LOADER
 # ==============================
 
 def _safe_key(name: str, alt_name: str = None) -> str | None:
-    """
-    Returns a clean string key.
-    Accepts primary name and optional alternative name.
-    Returns None if missing/invalid (so we can skip fallback gracefully).
-    """
     key = os.getenv(name) or (os.getenv(alt_name) if alt_name else None)
 
     if callable(key):
@@ -47,129 +51,134 @@ def _safe_key(name: str, alt_name: str = None) -> str | None:
     if key is None:
         return None
 
-    if not isinstance(key, str):
-        key = str(key)
-
-    key = key.strip()
+    key = str(key).strip()
     if not key:
         return None
 
-    # Provider-specific validation
     if name == "OPENAI_API_KEY" and not key.startswith("sk-"):
-        logger.warning("OPENAI_API_KEY format looks invalid")
+        logger.warning("Invalid OPENAI_API_KEY format")
         return None
 
-    # Accept both formats for OpenRouter
     if name == "OPENROUTER_API_KEY" and not (
         key.startswith("sk-or-") or key.startswith("sk-or-v1-")
     ):
-        logger.warning("OPENROUTER key format looks invalid")
+        logger.warning("Invalid OPENROUTER_API_KEY format")
         return None
 
     return key
 
 
 # ==============================
-# 🔹 Config Loader
+# 🔹 CLIENTS
 # ==============================
 
-def _get_config(model_override=None) -> Dict[str, Any]:
-    model = model_override or os.getenv("LLM_MODEL", DEFAULT_CHAT_MODEL)
-
-    if model not in ALLOWED_CHAT_MODELS:
-        logger.warning(f"Using non-whitelisted model: {model}")
-
-    api_key = _safe_key("OPENAI_API_KEY")
-
-    if not api_key:
-        raise ValueError("Missing/invalid OPENAI_API_KEY")
-
-    return {
-        "model": model,
-        "temperature": float(os.getenv("LLM_TEMPERATURE", "0.1")),
-        "max_tokens": int(os.getenv("LLM_MAX_TOKENS", "1024")),
-        "api_key": api_key,
-    }
-
-
-# ==============================
-# 🔹 Primary LLM
-# ==============================
-
-def get_primary_llm(model_override=None) -> ChatOpenAI:
-    cfg = _get_config(model_override)
-
-    return ChatOpenAI(
-        model=cfg["model"],
-        temperature=cfg["temperature"],
-        max_tokens=cfg["max_tokens"],
-        api_key=cfg["api_key"],
-        streaming=False,  # 🔥 critical fix
-    )
-
-
-# ==============================
-# 🔹 Fallback LLM (OpenRouter)
-# ==============================
-
-def get_fallback_llm() -> ChatOpenAI | None:
-    # ✅ Accept BOTH env names
-    key = _safe_key("OPENROUTER_API_KEY", alt_name="OPENROUTER_KEY")
-
+def _get_openrouter_client():
+    key = _safe_key("OPENROUTER_API_KEY", "OPENROUTER_KEY")
     if not key:
-        logger.warning("No valid OpenRouter key found → skipping fallback")
         return None
 
-    return ChatOpenAI(
-        model=os.getenv("FALLBACK_MODEL", "mistralai/mixtral-8x7b"),
-        temperature=float(os.getenv("LLM_TEMPERATURE", "0.1")),
-        max_tokens=int(os.getenv("LLM_MAX_TOKENS", "1024")),
-        base_url="https://openrouter.ai/api/v1",
+    return OpenAI(
         api_key=key,
-        streaming=False,
+        base_url="https://openrouter.ai/api/v1",
     )
 
 
+def _get_openai_client():
+    key = _safe_key("OPENAI_API_KEY")
+    if not key:
+        raise ValueError("Missing OPENAI_API_KEY")
+
+    return OpenAI(api_key=key)
+
+
 # ==============================
-# 🔹 Unified Invocation
+# 🔹 CORE INVOCATION (FINAL)
 # ==============================
 
-def invoke_llm(messages, model_override=None):
+def invoke_llm(messages, model_override=None, max_tokens=512, temperature=0.1):
     """
-    Single entry point for ALL LLM calls
-    Supports retry controller model override
+    Routing:
+    1. OpenRouter (strict models)
+    2. Fallback → OpenAI
     """
 
-    primary = get_primary_llm(model_override)
+    # ------------------------------
+    # STEP 1: OPENROUTER
+    # ------------------------------
+    or_client = _get_openrouter_client()
 
-    try:
-        return primary.invoke(messages)
+    if or_client:
+        for model in OPENROUTER_MODELS:
+            try:
+                logger.info(f"[OpenRouter] → {model}")
 
-    except Exception as e:
-        logger.warning(f"Primary failed → {e}")
+                res = or_client.chat.completions.create(
+                    model=model,
+                    messages=messages,
+                    max_tokens=max_tokens,
+                    temperature=temperature,
+                )
 
-        fallback = get_fallback_llm()
+                return res
 
-        if not fallback:
-            raise RuntimeError("Primary failed and no fallback available")
+            except Exception as e:
+                err = str(e)
 
-        return fallback.invoke(messages)
+                # 🔥 Backoff for rate/quota
+                if "429" in err or "quota" in err.lower():
+                    logger.warning(f"[OpenRouter] rate/quota hit: {model}")
+                    time.sleep(1)
+                    continue
+
+                logger.warning(f"[OpenRouter] failed: {model} | {err}")
+                continue
+
+    else:
+        logger.warning("⚠️ No OpenRouter key → skipping")
+
+    # ------------------------------
+    # STEP 2: OPENAI FALLBACK
+    # ------------------------------
+    logger.warning("⚠️ Switching → OpenAI fallback")
+
+    oa_client = _get_openai_client()
+
+    for model in OPENAI_MODELS:
+        try:
+            logger.info(f"[OpenAI] → {model}")
+
+            res = oa_client.chat.completions.create(
+                model=model,
+                messages=messages,
+                max_tokens=max_tokens,
+                temperature=temperature,
+            )
+
+            return res
+
+        except Exception as e:
+            logger.warning(f"[OpenAI] failed: {model} | {e}")
+            continue
+
+    # ------------------------------
+    # FINAL FAIL
+    # ------------------------------
+    raise RuntimeError("❌ All providers exhausted (OpenRouter + OpenAI)")
 
 
 # ==============================
-# 🔹 Embeddings
+# 🔹 EMBEDDINGS (STRICT)
 # ==============================
 
 def get_embed_model():
     model_name = os.getenv("EMBED_MODEL", DEFAULT_EMBED_MODEL)
 
-    if model_name not in ALLOWED_EMBED_MODELS:
-        raise ValueError(f"❌ Unauthorized embedding model: {model_name}")
+    if model_name not in OPENAI_EMBED_MODELS:
+        raise ValueError(f"Unauthorized embedding model: {model_name}")
 
     key = _safe_key("OPENAI_API_KEY")
-
     if not key:
-        raise ValueError("Missing/invalid OPENAI_API_KEY")
+        raise ValueError("Missing OPENAI_API_KEY")
 
     return OpenAIEmbeddings(
         model=model_name,
