@@ -20,15 +20,17 @@ from dotenv import load_dotenv
 load_dotenv(os.path.join(ROOT_DIR, ".env"))
 
 import streamlit as st
-from app.core.models import get_chat_model, get_embed_model
 
-# Initialize models
-CHAT_MODEL = get_chat_model()
+# ✅ FIXED IMPORT (UPDATED)
+from app.core.models import invoke_llm, get_embed_model
+
+# ✅ ONLY embeddings needed
 EMBED_MODEL = get_embed_model()
 
 from app.graph.workflow import build_graph
 from app.utils.pickle_cache import PickleCache
 from app.utils.encryption import encrypt, decrypt
+
 
 # ✅ FIXED: safe async runner (prevents Streamlit asyncio crash)
 def run_async(coro):
@@ -40,6 +42,7 @@ def run_async(coro):
             return loop.run_until_complete(coro)
     except RuntimeError:
         return asyncio.run(coro)
+
 
 st.set_page_config(
     page_title="Policy RAG",
@@ -59,9 +62,11 @@ if "messages" not in st.session_state: st.session_state.messages = []
 if "traces"   not in st.session_state: st.session_state.traces   = []
 if "cache"    not in st.session_state: st.session_state.cache    = PickleCache()
 
+
 @st.cache_resource
 def load_graph():
     return build_graph()
+
 
 # ── Sidebar ─────────────────────────────────────────────────────────────
 with st.sidebar:
@@ -81,7 +86,7 @@ with st.sidebar:
     st.metric("Cache size", f"{stats['size_mb']} MB")
 
     if st.button("🗑️ Clear cache"):
-        st.success(f"Cleared {st.session_state.cache.clear()} entries")
+        st.success(f"Cleared {st.session_state.cache.clear()} entries)
 
     st.divider()
     st.subheader("💡 Example queries")
@@ -99,7 +104,9 @@ with st.sidebar:
         if st.button(ex, key=ex, use_container_width=True):
             st.session_state["_prefill"] = ex
 
+
 col_chat, col_trace = st.columns([3, 2])
+
 
 # ── Chat ────────────────────────────────────────────────────────────────
 with col_chat:
@@ -157,7 +164,6 @@ with col_chat:
                     if grade_override:
                         init_state["employee_grade"] = grade_override.strip().upper()
 
-                    # ✅ FIXED async execution
                     result = asyncio.run(graph.ainvoke(init_state))
 
                     answer      = result.get("answer", "No answer generated.")
@@ -196,6 +202,7 @@ with col_chat:
             "sources": sources,
             "verified": verified
         })
+
 
 # ── Trace viewer ────────────────────────────────────────────────────────
 with col_trace:
