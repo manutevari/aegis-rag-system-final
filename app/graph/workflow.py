@@ -5,54 +5,60 @@ Merged Workflow — Simple backbone with LangGraph scalability
 import logging
 from langgraph.graph import StateGraph, END
 from app.state import AgentState, to_state
-from app.tools import retriever, planner, sql_tool, compute
+from app.core.vector_store import vector_db
+from app.core.models import get_chat_model
 
 logger = logging.getLogger(__name__)
 
 # ── Simple node wrappers ──
 def planner_run(state: AgentState) -> AgentState:
+    """Route query based on keywords."""
     state = to_state(state)
     q = state.query.lower()
-    if "budget" in q:
+    if "budget" in q or "cost" in q:
         state.route = "sql"
-    elif "calculate" in q:
+    elif "calculate" in q or "compute" in q:
         state.route = "compute"
     else:
         state.route = "retrieval"
     return state
 
 def retrieval_run(state: AgentState) -> AgentState:
+    """Fetch from vector store."""
     state = to_state(state)
-    docs = retriever.run(state) if hasattr(retriever, "run") else ["stub doc"]
-    state.retrieval_docs = docs
-    state.context = " ".join(docs)
-    state.answer = f"Answer from retrieval: {state.context}"
+    docs = vector_db.search(state.query, top_k=5)
+    state.retrieval_docs = [d.page_content for d in docs]
+    state.context = " ".join(state.retrieval_docs)
+    
+    # Generate answer
+    model = get_chat_model()
+    prompt = f"Based on: {state.context}\n\nAnswer: {state.query}"
+    response = model.invoke(prompt)
+    state.answer = response.content if hasattr(response, 'content') else str(response)
+    
     return state
 
 def sql_run(state: AgentState) -> AgentState:
+    """Execute SQL (stub)."""
     state = to_state(state)
-    result = sql_tool.run(state) if hasattr(sql_tool, "run") else [{"budget": "1000"}]
-    state.sql_result = result
-    state.answer = f"SQL result: {state.sql_result}"
+    state.answer = f"SQL query result for: {state.query}"
     return state
 
 def compute_run(state: AgentState) -> AgentState:
+    """Execute computation (stub)."""
     state = to_state(state)
-    result = compute.run(state) if hasattr(compute, "run") else 42.0
-    state.compute_result = result
-    state.compute_summary = "Computed successfully."
-    state.answer = f"Compute result: {state.compute_result}"
+    state.answer = f"Computed result for: {state.query}"
     return state
 
-# ── Routing helpers ──
 def _route_after_planner(state: AgentState) -> str:
+    """Route decision."""
     return state.route
 
-# ── Graph builder ──
-def build_graph() -> StateGraph:
+def build_graph():
+    """Build LangGraph workflow."""
     g = StateGraph(AgentState)
 
-    # Core nodes
+    # Add nodes
     g.add_node("planner", planner_run)
     g.add_node("retrieval", retrieval_run)
     g.add_node("sql", sql_run)
@@ -61,28 +67,15 @@ def build_graph() -> StateGraph:
     # Entry
     g.set_entry_point("planner")
 
-    # Planner routing
+    # Conditional routing
     g.add_conditional_edges(
         "planner", _route_after_planner,
-        {
-            "retrieval": "retrieval",
-            "sql": "sql",
-            "compute": "compute",
-        },
+        {"retrieval": "retrieval", "sql": "sql", "compute": "compute"}
     )
 
-    # End each branch
+    # End
     g.add_edge("retrieval", END)
     g.add_edge("sql", END)
     g.add_edge("compute", END)
 
     return g.compile()
-
-# ── Example usage ──
-if __name__ == "__main__":
-    graph = build_graph()
-    q = "What is the laptop budget for L6 employees?"
-    result = graph.invoke(AgentState(query=q))
-    print("Query:", q)
-    print("Route:", result.route)
-    print("Answer:", result.answer)
