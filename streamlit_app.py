@@ -158,7 +158,7 @@ with col_chat:
                         init_state["employee_grade"] = grade_override.strip().upper()
 
                     # ✅ FIXED async execution
-                    result = run_async(graph.ainvoke(init_state))
+                    result = asyncio.run(graph.ainvoke(init_state))
 
                     answer      = result.get("answer", "No answer generated.")
                     sources     = result.get("sources", [])
