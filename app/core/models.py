@@ -19,8 +19,6 @@ OPENROUTER_MODELS = [
 ]
 
 OPENAI_MODELS = [
-    "gpt-5-nano",
-    "gpt-5-mini",
     "gpt-4o-mini",
 ]
 
