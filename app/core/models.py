@@ -1,18 +1,18 @@
 """
-Model Registry — Safe, validated model access layer
-Fix: Ensures chat model returns STRING (not object) to avoid .lower() crash
+Unified Model Manager — Sync-safe, production-ready
+
+Eliminates:
+- async/sync mismatch
+- model object vs string confusion
+- scattered LLM creation
 """
 
 import os
-from typing import Optional
-from langchain.chat_models import init_chat_model
-from langchain_openai import OpenAIEmbeddings
+import logging
+from typing import Dict, Any
+from langchain_openai import ChatOpenAI, OpenAIEmbeddings
 
-# 🔹 Import middleware (safe optional)
-try:
-    from middleware import orchestrator_middleware
-except Exception:
-    orchestrator_middleware = None
+logger = logging.getLogger(__name__)
 
 
 # ==============================
@@ -35,53 +35,85 @@ DEFAULT_EMBED_MODEL = "text-embedding-3-small"
 
 
 # ==============================
-# 🔹 Chat Model (PRIMARY FIX)
+# 🔹 Config Loader
 # ==============================
 
-def get_chat_model() -> str:
-    """
-    Returns ONLY model name (string).
-    This prevents `.lower()` crashes inside LangChain/OpenAI wrappers.
-    """
-    model_name = os.getenv("LLM_MODEL", DEFAULT_CHAT_MODEL)
+def _get_config() -> Dict[str, Any]:
+    model = os.getenv("LLM_MODEL", DEFAULT_CHAT_MODEL)
 
-    if model_name not in ALLOWED_CHAT_MODELS:
-        raise ValueError(f"❌ Unauthorized chat model: {model_name}")
+    if model not in ALLOWED_CHAT_MODELS:
+        raise ValueError(f"❌ Unauthorized chat model: {model}")
 
-    return model_name
+    api_key = os.getenv("OPENAI_API_KEY")
+
+    if not isinstance(api_key, str) or not api_key:
+        raise ValueError("❌ OPENAI_API_KEY must be a valid string")
+
+    return {
+        "model": model,
+        "temperature": float(os.getenv("LLM_TEMPERATURE", "0.1")),
+        "max_tokens": int(os.getenv("LLM_MAX_TOKENS", "1024")),
+        "api_key": api_key,
+    }
 
 
 # ==============================
-# 🔹 Optional: Full LLM Object (SAFE)
+# 🔹 Primary LLM
 # ==============================
 
-def get_chat_llm(temperature: float = 0.1, max_tokens: int = 1024):
-    """
-    Returns actual Chat model object (ONLY use if needed explicitly).
-    Safe wrapper with middleware support.
-    """
-    model_name = get_chat_model()
+def get_primary_llm() -> ChatOpenAI:
+    cfg = _get_config()
 
-    llm = init_chat_model(
-        model=model_name,
-        model_provider="openai",
-        api_key=os.getenv("OPENAI_API_KEY"),
-        temperature=temperature,
-        max_tokens=max_tokens,
+    return ChatOpenAI(
+        model=cfg["model"],
+        temperature=cfg["temperature"],
+        max_tokens=cfg["max_tokens"],
+        api_key=cfg["api_key"],
     )
 
-    # 🔹 Attach middleware if supported
-    if orchestrator_middleware:
-        try:
-            llm.middleware = [orchestrator_middleware]
-        except Exception:
-            pass
 
-    return llm
+# ==============================
+# 🔹 Fallback LLM (OpenRouter)
+# ==============================
+
+def get_fallback_llm() -> ChatOpenAI:
+    return ChatOpenAI(
+        model=os.getenv("FALLBACK_MODEL", "meta-llama/llama-3-70b-instruct"),
+        temperature=float(os.getenv("LLM_TEMPERATURE", "0.1")),
+        max_tokens=int(os.getenv("LLM_MAX_TOKENS", "1024")),
+        base_url="https://openrouter.ai/api/v1",
+        api_key=os.getenv("OPENROUTER_API_KEY"),
+    )
 
 
 # ==============================
-# 🔹 Embedding Model
+# 🔹 Unified Invocation
+# ==============================
+
+def invoke_llm(messages):
+    """
+    Single entry point for ALL LLM calls
+    """
+
+    primary = get_primary_llm()
+
+    try:
+        return primary.invoke(messages)
+
+    except Exception as e:
+        logger.warning(f"Primary failed: {e}")
+
+        fallback = get_fallback_llm()
+
+        try:
+            return fallback.invoke(messages)
+        except Exception as e2:
+            logger.error(f"Fallback failed: {e2}")
+            raise RuntimeError("Both LLMs failed")
+
+
+# ==============================
+# 🔹 Embeddings
 # ==============================
 
 def get_embed_model():
@@ -92,5 +124,5 @@ def get_embed_model():
 
     return OpenAIEmbeddings(
         model=model_name,
-        openai_api_key=os.getenv("OPENAI_API_KEY")
+        openai_api_key=os.getenv("OPENAI_API_KEY"),
     )
