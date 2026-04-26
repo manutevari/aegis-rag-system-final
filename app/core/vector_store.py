@@ -1,9 +1,16 @@
 import logging
+import os
 from typing import List, Any
+
 from langchain.vectorstores import FAISS
 from langchain_openai import OpenAIEmbeddings
 
+# Optional: if you have cross_encoder and trace utilities
+# from app.core.utils import cross_encoder
+# from app.utils.tracing import trace
+
 logger = logging.getLogger(__name__)
+logging.basicConfig(level=logging.INFO)
 
 # ==============================
 # 🔹 Embedding Model
@@ -11,7 +18,7 @@ logger = logging.getLogger(__name__)
 def _get_embeddings() -> OpenAIEmbeddings:
     return OpenAIEmbeddings(
         model="text-embedding-3-small",  # or "text-embedding-3-large"
-        openai_api_key=None  # will be picked up from env
+        openai_api_key=os.getenv("OPENAI_API_KEY")
     )
 
 # ==============================
@@ -60,3 +67,37 @@ class VectorDB:
 # 🔹 Global Instance
 # ==============================
 vector_db = VectorDB()
+
+# ==============================
+# 🔹 One-shot Retrieval Function
+# ==============================
+def retrieve(query: str, top_k: int = 3):
+    """Embed query, search vector DB, and return results."""
+    embedder = _get_embeddings()
+    q_emb = embedder.embed_query(query)
+
+    results = vector_db.search(q_emb, top_k=top_k)
+    docs = [getattr(r, "page_content", str(r)) for r in results]
+
+    # Optional rerank if you have cross_encoder
+    # try:
+    #     reranked = cross_encoder.rank(query, docs)
+    #     docs = [chunk for chunk, _ in reranked[:top_k]]
+    # except Exception as e:
+    #     logger.warning("Rerank failed: %s", e)
+
+    return docs
+
+# ==============================
+# 🔹 Entrypoint
+# ==============================
+if __name__ == "__main__":
+    # Example usage
+    vector_db.load()  # load existing FAISS index
+    query = "What is the laptop budget for L6 employees?"
+    results = retrieve(query, top_k=3)
+
+    print("\nQuery:", query)
+    print("Results:")
+    for i, doc in enumerate(results, 1):
+        print(f"{i}. {doc[:200]}...")
