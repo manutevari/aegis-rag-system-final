@@ -1,7 +1,8 @@
-# app/nodes/retry_controller.py
 """
-Retry Controller — bounded loop for LLM stability
-- Escalates model on failure
+Retry Controller — bounded loop for LLM stability (confidence-aware)
+
+- Uses confidence scoring
+- Escalates model only when needed
 - Prevents infinite loops
 - Routes to HITL when exhausted
 """
@@ -12,14 +13,24 @@ from app.utils.tracing import trace
 
 logger = logging.getLogger(__name__)
 
-MAX_RETRIES = 2
+# ==============================
+# 🔹 Config
+# ==============================
 
-# simple tier ladder (customize as needed)
+MAX_RETRIES = 2
+TH_ACCEPT = 0.75
+TH_RETRY  = 0.50
+
 MODEL_TIERS = [
-    "gpt-4o-mini",  # fast/cheap
+    "gpt-4o-mini",  # fast
     "gpt-5-mini",   # stronger
-    "gpt-5-nano",   # alt tier if you prefer; reorder if needed
+    "gpt-5-nano",   # alternative/escalation
 ]
+
+
+# ==============================
+# 🔹 Model Escalation
+# ==============================
 
 def _next_model(current: str) -> str:
     try:
@@ -28,49 +39,73 @@ def _next_model(current: str) -> str:
     except ValueError:
         return MODEL_TIERS[0]
 
+
+# ==============================
+# 🔹 Main Controller
+# ==============================
+
 def run(state: AgentState) -> AgentState:
     answer = (state.get("answer") or "").strip()
     verified = bool(state.get("verified"))
     retries = int(state.get("retries", 0))
+    confidence = float(state.get("confidence", 0.0))
     current_model = state.get("model") or MODEL_TIERS[0]
 
-    # treat explicit generation errors as failure
+    # 🔴 Detect hard failure
     has_error = (
         state.get("error") is not None
         or "Generation error" in answer
         or "⚠️" in answer
     )
 
-    # success path
-    if verified and not has_error:
+    # ==============================
+    # ✅ ACCEPT (High confidence)
+    # ==============================
+    if not has_error and verified and confidence >= TH_ACCEPT:
         state["route"] = "trace"
+
         return trace(state, node="retry_controller", data={
-            "decision": "pass",
+            "decision": "accept",
+            "confidence": round(confidence, 3),
             "retries": retries,
             "model": current_model
         })
 
-    # failure path
-    if retries >= MAX_RETRIES:
-        state["route"] = "hitl"
+    # ==============================
+    # 🔁 RETRY (Smart logic)
+    # ==============================
+    if retries < MAX_RETRIES and (has_error or confidence < TH_ACCEPT):
+
+        # escalate only if very low confidence
+        if confidence < TH_RETRY:
+            next_model = _next_model(current_model)
+        else:
+            next_model = current_model
+
+        state["retries"] = retries + 1
+        state["model"] = next_model
+        state["route"] = "generate"
+
+        logger.warning(
+            f"Retry #{state['retries']} | conf={confidence:.2f} | {current_model} → {next_model}"
+        )
+
         return trace(state, node="retry_controller", data={
-            "decision": "exhausted_to_hitl",
-            "retries": retries,
-            "model": current_model
+            "decision": "retry",
+            "confidence": round(confidence, 3),
+            "retries": state["retries"],
+            "model": next_model,
+            "reason": "error" if has_error else "low_confidence"
         })
 
-    # retry with escalation
-    next_model = _next_model(current_model)
-    state["retries"] = retries + 1
-    state["model"] = next_model
-    state["route"] = "generate"  # loop back
-
-    logger.warning(
-        f"Retry #{state['retries']} — escalating model: {current_model} → {next_model}"
-    )
+    # ==============================
+    # 🧑‍💼 ESCALATE TO HITL
+    # ==============================
+    state["route"] = "hitl"
 
     return trace(state, node="retry_controller", data={
-        "decision": "retry",
-        "retries": state["retries"],
-        "model": next_model
+        "decision": "hitl",
+        "confidence": round(confidence, 3),
+        "retries": retries,
+        "model": current_model
     })
