@@ -1,9 +1,18 @@
+"""
+Model Registry — Safe, validated model access layer
+Fix: Ensures chat model returns STRING (not object) to avoid .lower() crash
+"""
+
 import os
+from typing import Optional
 from langchain.chat_models import init_chat_model
 from langchain_openai import OpenAIEmbeddings
 
-# 🔹 Import middleware (adjust path if needed)
-from middleware import orchestrator_middleware
+# 🔹 Import middleware (safe optional)
+try:
+    from middleware import orchestrator_middleware
+except Exception:
+    orchestrator_middleware = None
 
 
 # ==============================
@@ -26,34 +35,53 @@ DEFAULT_EMBED_MODEL = "text-embedding-3-small"
 
 
 # ==============================
-# 🔹 Chat Model (FIXED)
+# 🔹 Chat Model (PRIMARY FIX)
 # ==============================
 
-def get_chat_model():
+def get_chat_model() -> str:
+    """
+    Returns ONLY model name (string).
+    This prevents `.lower()` crashes inside LangChain/OpenAI wrappers.
+    """
     model_name = os.getenv("LLM_MODEL", DEFAULT_CHAT_MODEL)
 
     if model_name not in ALLOWED_CHAT_MODELS:
         raise ValueError(f"❌ Unauthorized chat model: {model_name}")
 
-    # Initialize actual model (NOT string)
-    model = init_chat_model(
-        model=model_name,
-        model_provider="openai",
-        api_key=os.getenv("OPENAI_API_KEY")
-    )
-
-    # 🔹 Attach middleware safely
-    try:
-        model.middleware = [orchestrator_middleware]
-    except Exception:
-        # Fallback for versions that don't support middleware attr
-        pass
-
-    return model
+    return model_name
 
 
 # ==============================
-# 🔹 Embedding Model (FIXED)
+# 🔹 Optional: Full LLM Object (SAFE)
+# ==============================
+
+def get_chat_llm(temperature: float = 0.1, max_tokens: int = 1024):
+    """
+    Returns actual Chat model object (ONLY use if needed explicitly).
+    Safe wrapper with middleware support.
+    """
+    model_name = get_chat_model()
+
+    llm = init_chat_model(
+        model=model_name,
+        model_provider="openai",
+        api_key=os.getenv("OPENAI_API_KEY"),
+        temperature=temperature,
+        max_tokens=max_tokens,
+    )
+
+    # 🔹 Attach middleware if supported
+    if orchestrator_middleware:
+        try:
+            llm.middleware = [orchestrator_middleware]
+        except Exception:
+            pass
+
+    return llm
+
+
+# ==============================
+# 🔹 Embedding Model
 # ==============================
 
 def get_embed_model():
