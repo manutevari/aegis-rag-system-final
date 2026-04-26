@@ -1,5 +1,5 @@
 import time
-from app.evaluation.metrics import exact_match, recall_at_k
+from app.evaluation.metrics import answer_score, recall_at_k
 
 def run_pipeline(graph, question: str):
     start = time.time()
@@ -12,6 +12,7 @@ def run_pipeline(graph, question: str):
         "latency": latency,
         "tokens": result.get("tokens_used", 0)
     }
+
 
 def evaluate(graph, dataset, cost_tracker):
     outputs = []
@@ -31,7 +32,7 @@ def evaluate(graph, dataset, cost_tracker):
             "contexts": res["contexts"],
             "ground_truth": item["ground_truth"],
             "source": item["source"],
-            "em": exact_match(res["answer"], item["ground_truth"]),
+            "score": answer_score(res["answer"], item["ground_truth"]),
             "recall": recall_at_k(res["contexts"], item["source"])
         })
 
