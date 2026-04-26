@@ -1,7 +1,6 @@
-```python
 import os, sys, asyncio, time
 
-# ✅ FIXED: deterministic path resolution
+# ✅ FIXED: deterministic path resolution (REQUIRED FOR DEPLOYMENT)
 ROOT_DIR = os.path.dirname(os.path.abspath(__file__))
 if ROOT_DIR not in sys.path:
     sys.path.insert(0, ROOT_DIR)
@@ -12,21 +11,28 @@ if PARENT_DIR not in sys.path:
 
 os.chdir(ROOT_DIR)
 
+"""
+Streamlit UI — Decision-Grade RAG Chatbot
+Features: chat history · execution trace viewer · HITL review panel · cache stats
+"""
+
 from dotenv import load_dotenv
 load_dotenv(os.path.join(ROOT_DIR, ".env"))
 
 import streamlit as st
 
-# Backend
-from app.core.models import get_embed_model
+# ✅ FIXED IMPORT (UPDATED)
+from app.core.models import invoke_llm, get_embed_model
+
+# ✅ ONLY embeddings needed
+EMBED_MODEL = get_embed_model()
+
 from app.graph.workflow import build_graph
 from app.utils.pickle_cache import PickleCache
 from app.utils.encryption import encrypt, decrypt
 
 
-# -------------------------
-# Async Fix
-# -------------------------
+# ✅ FIXED: safe async runner (prevents Streamlit asyncio crash)
 def run_async(coro):
     try:
         loop = asyncio.get_event_loop()
@@ -38,18 +44,6 @@ def run_async(coro):
         return asyncio.run(coro)
 
 
-# -------------------------
-# Streaming Output
-# -------------------------
-def stream_text(text: str):
-    for word in text.split():
-        yield word + " "
-        time.sleep(0.015)
-
-
-# -------------------------
-# Page Config
-# -------------------------
 st.set_page_config(
     page_title="Policy RAG",
     page_icon="🏢",
@@ -57,21 +51,16 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
-st.markdown("""
-<style>
+st.markdown("""<style>
 .source-tag{background:#e8f4fd;color:#1a73e8;padding:2px 8px;border-radius:12px;font-size:12px;margin-right:4px}
 .ok-tag{background:#d4edda;color:#155724;padding:2px 8px;border-radius:12px;font-size:12px}
 .fail-tag{background:#f8d7da;color:#721c24;padding:2px 8px;border-radius:12px;font-size:12px}
-</style>
-""", unsafe_allow_html=True)
+</style>""", unsafe_allow_html=True)
 
-
-# -------------------------
-# Session State
-# -------------------------
+# Session state init
 if "messages" not in st.session_state: st.session_state.messages = []
-if "traces" not in st.session_state: st.session_state.traces = []
-if "cache" not in st.session_state: st.session_state.cache = PickleCache()
+if "traces"   not in st.session_state: st.session_state.traces   = []
+if "cache"    not in st.session_state: st.session_state.cache    = PickleCache()
 
 
 @st.cache_resource
@@ -79,25 +68,19 @@ def load_graph():
     return build_graph()
 
 
-# -------------------------
-# Sidebar
-# -------------------------
+# ── Sidebar ─────────────────────────────────────────────────────────────
 with st.sidebar:
     st.title("🏢 Decision-Grade RAG")
-    st.caption("LangGraph + Transparent AI")
-
+    st.caption("Corporate Policy Assistant · LangGraph backbone")
     st.divider()
 
     use_cache = st.toggle("Cache answers", True)
-    show_context = st.toggle("Show Retrieved Context", False)
-
     hitl_mode = st.selectbox("HITL Mode", ["auto","queue","cli"])
     os.environ["HITL_MODE"] = hitl_mode
 
-    grade_override = st.text_input("Employee grade", placeholder="L4, VP")
+    grade_override = st.text_input("Employee grade (optional)", placeholder="e.g. L4, VP")
 
     st.divider()
-
     stats = st.session_state.cache.stats()
     st.metric("Cached entries", stats["entries"])
     st.metric("Cache size", f"{stats['size_mb']} MB")
@@ -105,16 +88,27 @@ with st.sidebar:
     if st.button("🗑️ Clear cache"):
         st.success(f"Cleared {st.session_state.cache.clear()} entries")
 
+    st.divider()
+    st.subheader("💡 Example queries")
 
-# -------------------------
-# Layout
-# -------------------------
+    EXAMPLES = [
+        "Hotel limit for L5 on domestic travel?",
+        "Calculate VP trip cost: 3 nights domestic",
+        "International per diem for L4 grade?",
+        "How is EL encashment calculated?",
+        "What laptop budget does L6 get?",
+        "Approval needed for ₹3 lakh expense claim?",
+    ]
+
+    for ex in EXAMPLES:
+        if st.button(ex, key=ex, use_container_width=True):
+            st.session_state["_prefill"] = ex
+
+
 col_chat, col_trace = st.columns([3, 2])
 
 
-# -------------------------
-# Chat Section
-# -------------------------
+# ── Chat ────────────────────────────────────────────────────────────────
 with col_chat:
     st.header("💬 Chat")
 
@@ -129,28 +123,29 @@ with col_chat:
                 )
 
             if "verified" in m:
-                cls = "ok-tag" if m["verified"] else "fail-tag"
-                lbl = "✓ Verified" if m["verified"] else "⚠ Unverified"
+                cls, lbl = ("ok-tag","✓ Verified") if m["verified"] else ("fail-tag","⚠ Unverified")
                 st.markdown(f'<span class="{cls}">{lbl}</span>', unsafe_allow_html=True)
 
+    prefill = st.session_state.get("_prefill", "")
+    st.session_state["_prefill"] = ""
 
-    query = st.chat_input("Ask about any corporate policy…")
+    query = st.chat_input("Ask about any corporate policy…") or prefill
 
     if query:
-        st.session_state.messages.append({"role": "user", "content": query})
+        st.session_state.messages.append({"role":"user","content":query})
 
         with st.chat_message("user"):
             st.markdown(query)
 
         with st.chat_message("assistant"):
-            with st.spinner("🔍 Processing..."):
-                start = time.time()
+            with st.spinner("🔍 Searching policies…"):
 
-                cached = st.session_state.cache.get(query) if use_cache else None
+                cached_bytes = st.session_state.cache.get(query) if use_cache else None
 
-                if cached:
-                    answer = decrypt(cached)
+                if cached_bytes:
+                    answer = decrypt(cached_bytes)
                     sources, verified, route, trace_steps = [], True, "cache", []
+
                 else:
                     graph = load_graph()
 
@@ -159,7 +154,7 @@ with col_chat:
                         for m in st.session_state.messages[-8:]
                     ]
 
-                    state = {
+                    init_state = {
                         "query": query,
                         "history": history,
                         "trace_log": [],
@@ -167,14 +162,14 @@ with col_chat:
                     }
 
                     if grade_override:
-                        state["employee_grade"] = grade_override.strip().upper()
+                        init_state["employee_grade"] = grade_override.strip().upper()
 
-                    result = asyncio.run(graph.ainvoke(state))
+                    result = asyncio.run(graph.ainvoke(init_state))
 
-                    answer = result.get("answer", "No answer generated.")
-                    sources = result.get("sources", [])
-                    verified = result.get("verified", False)
-                    route = result.get("route", "?")
+                    answer      = result.get("answer", "No answer generated.")
+                    sources     = result.get("sources", [])
+                    verified    = result.get("verified", False)
+                    route       = result.get("route", "?")
                     trace_steps = result.get("trace_log", [])
 
                     if use_cache and answer:
@@ -187,65 +182,19 @@ with col_chat:
                         "steps": trace_steps
                     })
 
-                latency = round(time.time() - start, 2)
+            st.markdown(answer)
 
-            # -------------------------
-            # STREAMING ANSWER
-            # -------------------------
-            st.write_stream(stream_text(answer))
-
-            # -------------------------
-            # CONFIDENCE SCORE
-            # -------------------------
-            confidence = 0.0
-            if verified:
-                confidence += 0.5
-            if sources:
-                confidence += min(0.5, len(sources) * 0.1)
-
-            confidence = min(confidence, 1.0)
-
-            if confidence >= 0.8:
-                st.success(f"Confidence: {confidence:.2f}")
-            elif confidence >= 0.5:
-                st.warning(f"Confidence: {confidence:.2f}")
-            else:
-                st.error(f"Low Confidence: {confidence:.2f}")
-
-            # -------------------------
-            # SOURCES
-            # -------------------------
             if sources:
                 st.markdown(
                     " ".join(f'<span class="source-tag">{s}</span>' for s in sources),
                     unsafe_allow_html=True
                 )
 
-            # -------------------------
-            # CONTEXT VIEWER
-            # -------------------------
-            if show_context and trace_steps:
-                with st.expander("🔍 Retrieved Context"):
-                    for step in trace_steps:
-                        if step.get("node") == "retrieval":
-                            docs = step.get("data", {}).get("documents", [])
-                            for i, d in enumerate(docs[:5], 1):
-                                st.markdown(f"**Doc {i}:**")
-                                st.write(str(d)[:500])
-                                st.divider()
-
-            # -------------------------
-            # META INFO
-            # -------------------------
-            cls = "ok-tag" if verified else "fail-tag"
-            lbl = "✓ Verified" if verified else "⚠ Unverified"
-
+            cls, lbl = ("ok-tag","✓ Verified") if verified else ("fail-tag","⚠ Unverified")
             st.markdown(
                 f'<span class="{cls}">{lbl}</span> · route: **{route}**',
                 unsafe_allow_html=True
             )
-
-            st.caption(f"⏱️ Response time: {latency}s")
 
         st.session_state.messages.append({
             "role": "assistant",
@@ -255,37 +204,27 @@ with col_chat:
         })
 
 
-# -------------------------
-# TRACE PANEL
-# -------------------------
+# ── Trace viewer ────────────────────────────────────────────────────────
 with col_trace:
     st.header("🔍 Execution Trace")
 
     if not st.session_state.traces:
-        st.info("Run a query to see trace")
+        st.info("Run a query to see the trace here.")
     else:
         latest = st.session_state.traces[-1]
 
         st.caption(
-            f"Route: **{latest.get('route')}** · Verified: **{latest.get('verified')}**"
+            f"Route: **{latest.get('route','?')}** · Verified: **{latest.get('verified','?')}**"
         )
 
         ICONS = {
             "planner":"🧭","retrieval":"📄","sql":"🗄️","compute":"🔢",
-            "context_assembler":"📋","generate":"✨","verify":"✅"
+            "context_assembler":"📋","token_check":"⚖️","summarize_context":"📝",
+            "generate":"✨","verify":"✅","hitl":"👤","encrypt":"🔐",
+            "decrypt":"🔓","trace":"📊"
         }
 
         for step in latest.get("steps", []):
-            node = step.get("node", "?")
-            with st.expander(f"{ICONS.get(node,'⚙️')} {node}"):
-                data = step.get("data", {})
-
-                if isinstance(data, dict):
-                    trimmed = {
-                        k: (str(v)[:500] + "...") if len(str(v)) > 500 else v
-                        for k, v in data.items()
-                    }
-                    st.json(trimmed)
-                else:
-                    st.write(str(data)[:500])
-```
+            n = step.get("node", "?")
+            with st.expander(f"{ICONS.get(n,'⚙️')} {n}", expanded=False):
+                st.json(step.get("data", {}))
