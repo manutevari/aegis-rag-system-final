@@ -2,13 +2,26 @@ import os
 import streamlit as st
 from langchain.chat_models import init_chat_model
 from langchain.embeddings import OpenAIEmbeddings
+import openai
 
 # ==============================
-# 🔹 Allowed Models
+# 🔹 Model Whitelists
 # ==============================
 
-ALLOWED_CHAT_MODELS = {"gpt-5-nano", "gpt-5-mini", "gpt-4o-mini"}
-ALLOWED_EMBED_MODELS = {"text-embedding-3-small", "text-embedding-3-large"}
+OPENAI_CHAT_MODELS = {"gpt-5-nano", "gpt-5-mini", "gpt-4o-mini"}
+OPENAI_EMBED_MODELS = {"text-embedding-3-small", "text-embedding-3-large"}
+
+# For OpenRouter, allow all free trustworthy models
+OPENROUTER_FREE_MODELS = {
+    "gpt-4o-mini",
+    "gpt-5-mini",
+    "gpt-5-nano",
+    "llama-3.3-70b",
+    "qwen-3-next-80b",
+    "nemotron-3-super-120b",
+    "deepseek-r1",
+    "gpt-oss-120b"
+}
 
 DEFAULT_CHAT_MODEL = "gpt-4o-mini"
 DEFAULT_EMBED_MODEL = "text-embedding-3-small"
@@ -18,13 +31,19 @@ DEFAULT_EMBED_MODEL = "text-embedding-3-small"
 # ==============================
 
 def get_chat_model():
+    provider = os.getenv("LLM_PROVIDER", "openai")
     model_name = os.getenv("LLM_MODEL", DEFAULT_CHAT_MODEL)
-    if model_name not in ALLOWED_CHAT_MODELS:
-        raise ValueError(f"❌ Unauthorized chat model: {model_name}")
+
+    if provider == "openai":
+        if model_name not in OPENAI_CHAT_MODELS:
+            raise ValueError(f"❌ Unauthorized OpenAI chat model: {model_name}")
+    elif provider == "openrouter":
+        if model_name not in OPENROUTER_FREE_MODELS:
+            raise ValueError(f"❌ Unauthorized OpenRouter chat model: {model_name}")
 
     model = init_chat_model(
         model=model_name,
-        model_provider="openai",
+        model_provider=provider,
         api_key=os.getenv("OPENAI_API_KEY")
     )
 
@@ -41,9 +60,16 @@ def get_chat_model():
 # ==============================
 
 def get_embed_model():
+    provider = os.getenv("LLM_PROVIDER", "openai")
     model_name = os.getenv("EMBED_MODEL", DEFAULT_EMBED_MODEL)
-    if model_name not in ALLOWED_EMBED_MODELS:
-        raise ValueError(f"❌ Unauthorized embedding model: {model_name}")
+
+    if provider == "openai":
+        if model_name not in OPENAI_EMBED_MODELS:
+            raise ValueError(f"❌ Unauthorized OpenAI embedding model: {model_name}")
+    elif provider == "openrouter":
+        # For OpenRouter, allow OpenAI embeddings or other free embeddings
+        if model_name not in OPENAI_EMBED_MODELS:
+            raise ValueError(f"❌ Unauthorized OpenRouter embedding model: {model_name}")
 
     return OpenAIEmbeddings(
         model=model_name,
@@ -81,15 +107,24 @@ def rerank(chunks: list[str], query: str, cutoff: int = 3) -> list[str]:
     scores = cross_encoder.rank(query, chunks)
     return [chunk for chunk, _ in scores[:cutoff]]
 
-# ✅ PII Redaction wired
+# ✅ PII Redaction wired with quota-aware fallback
 from app.core.utils import redact
 def generate_answer(query: str, context_chunks: list[str]) -> str:
     context = "\n\n".join(context_chunks)
     prompt = f"Answer based only on context:\n{context}\n\nQ: {query}\nA:"
     chat_model = get_chat_model()
-    resp = chat_model.invoke(prompt)
-    raw = resp.content if hasattr(resp, "content") else str(resp)
-    return redact(raw)
+
+    try:
+        resp = chat_model.invoke(prompt)
+        raw = resp.content if hasattr(resp, "content") else str(resp)
+        return redact(raw)
+
+    except openai.error.RateLimitError:
+        # Quota exceeded fallback
+        return "⚠️ Quota exceeded. Please use one of the free OpenRouter models: " + ", ".join(OPENROUTER_FREE_MODELS)
+
+    except Exception as e:
+        return f"⚠️ Error: {str(e)}"
 
 # ==============================
 # 🔹 Pipeline Runner
