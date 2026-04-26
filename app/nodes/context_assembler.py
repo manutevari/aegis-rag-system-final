@@ -40,7 +40,13 @@ def run(state: AgentState) -> AgentState:
     query   = state.get("query", "")
     grade   = state.get("employee_grade", "")
     rows    = state.get("sql_result") or []
-    docs    = state.get("retrieval_docs") or []
+
+    # 🔥 BACKWARD + FORWARD COMPATIBILITY LAYER (ADDED)
+    docs_structured = state.get("documents") or [
+        {"content": d, "source": "legacy"} for d in state.get("retrieval_docs", [])
+    ]
+    docs = [d.get("content", "") for d in docs_structured]
+
     result  = state.get("compute_result")
     summary = state.get("compute_summary", "")
     history = state.get("history") or []
@@ -49,12 +55,16 @@ def run(state: AgentState) -> AgentState:
         "═══ CORPORATE POLICY CONTEXT ═══",
         f"QUERY: {query}" + (f"  [Grade: {grade}]" if grade else ""),
     ]
+
     if rows:
         parts += [_SEP + "📋 STRUCTURED POLICY DATA", _fmt_sql(rows)]
+
     if docs:
         parts += [_SEP + "📄 POLICY DOCUMENT EXCERPTS", _fmt_docs(docs)]
+
     if result is not None:
         parts += [_SEP + "🔢 DETERMINISTIC COMPUTATION", _fmt_compute(summary, result)]
+
     if history:
         recent = "\n".join(f"  {m['role'].upper()}: {m['content']}" for m in history[-4:])
         parts += [_SEP + "💬 CONVERSATION CONTEXT", recent]
@@ -65,6 +75,13 @@ def run(state: AgentState) -> AgentState:
     logger.info("Context assembled: %d chars (~%d tokens)", len(context), tokens)
 
     return trace(
-        {**state, "context": context, "token_count": tokens},
-        node="context_assembler", data={"tokens": tokens},
+        {
+            **state,
+            "context": context,
+            "token_count": tokens,
+            # 🆕 optional sync (non-breaking)
+            "context_tokens": tokens
+        },
+        node="context_assembler",
+        data={"tokens": tokens},
     )
