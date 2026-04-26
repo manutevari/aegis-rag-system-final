@@ -1,68 +1,66 @@
 """
-AgentState — Single source of truth passed between every LangGraph node.
-Backward-compatible + research-grade extensions (non-breaking).
+Agent State — Unified one-shot definition with Pydantic
 """
 
-from typing import Any, Dict, List, Optional, TypedDict
+from typing import Any, Dict, List, Union
+from pydantic import BaseModel, Field
 
-
-class AgentState(TypedDict, total=False):
-
-    # ── Input ──────────────────────────────────────────────────────────────
+class AgentState(BaseModel):
+    # ── Input ──
     query: str
-    employee_grade: Optional[str]
-    history: List[Dict[str, str]]
+    history: List[Dict[str, Any]] = Field(default_factory=list)
+    employee_grade: str = Field(default="L3")
 
-    # ── Routing ────────────────────────────────────────────────────────────
-    route: str                         # "sql" | "retrieval" | "compute" | "direct"
-    needs_compute: bool
+    # ── Routing ──
+    route: str = Field(default="retrieval")  # sql | retrieval | compute | direct
 
-    # 🆕 Research extension (SAFE)
-    max_retries: int
+    # ── Retrieval ──
+    retrieval_docs: List[str] = Field(default_factory=list)
+    context: str = Field(default="")
+    sources: List[str] = Field(default_factory=list)
 
-    # ── Tool outputs ───────────────────────────────────────────────────────
-    sql_result: Optional[List[dict]]
-    sql_params: Optional[dict]
+    # ── Compute ──
+    compute_result: float | None = None
+    compute_steps: List[str] = Field(default_factory=list)
+    compute_summary: str = Field(default="")
 
-    retrieval_docs: List[str]          # existing (DO NOT CHANGE)
+    # ── Generation ──
+    answer: str = Field(default="")
+    raw_answer: str = Field(default="")
 
-    # 🆕 Research-compatible structured docs (optional, non-breaking)
-    documents: List[Dict[str, Any]]    # [{content, score, source}]
-    retrieved: bool
+    # ── Validation ──
+    verified: bool = False
+    verification_checks: Dict[str, bool] = Field(default_factory=dict)
 
-    compute_result: Optional[float]
-    compute_steps: List[str]
-    compute_summary: str
+    # ── Retry Control ──
+    retry_count: int = 0
+    max_retries: int = 3
 
-    # ── Context ────────────────────────────────────────────────────────────
-    context: str
-    token_count: int
-    context_summarized: bool
+    # ── HITL ──
+    hitl_mode: str = Field(default="auto")      # auto | queue | cli
+    hitl_decision: str = Field(default="approve")  # approve | reject | edit
+    hitl_feedback: str = Field(default="")
 
-    # 🆕 alias for research (non-breaking)
-    context_tokens: int
+    # ── Logging ──
+    trace_log: List[Dict[str, Any]] = Field(default_factory=list)
+    error: str = Field(default="")
 
-    # ── Generation ─────────────────────────────────────────────────────────
-    answer: str
-    sources: List[str]
-    _encrypted_answer: Optional[bytes]
+    class Config:
+        arbitrary_types_allowed = True
 
-    # ── Verification ───────────────────────────────────────────────────────
-    verified: bool
-    verification_issues: List[str]
-    retry_count: int
+# 🔹 Helper: accept dict or AgentState seamlessly
+def to_state(data: Union[Dict[str, Any], AgentState]) -> AgentState:
+    if isinstance(data, AgentState):
+        return data
+    return AgentState(**data)
 
-    # 🆕 Research additions
-    confidence: float
+# 🔹 Example usage
+if __name__ == "__main__":
+    # dict input
+    raw = {"query": "Laptop budget for L6?", "employee_grade": "L6"}
+    state = to_state(raw)
+    print(state.dict())
 
-    # ── HITL ───────────────────────────────────────────────────────────────
-    hitl_decision: str                 # "approve" | "edit" | "reject"
-    hitl_edited_answer: Optional[str]
-
-    # ── Tracing / Observability ────────────────────────────────────────────
-    trace_log: List[Dict[str, Any]]
-
-    error: Optional[str]
-
-    # 🆕 Research-safe error aggregation
-    errors: List[str]
+    # model input
+    model_state = AgentState(query="Per diem for L4?")
+    print(model_state.dict())
