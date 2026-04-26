@@ -1,10 +1,5 @@
 """
-Unified Model Manager — Sync-safe, production-ready
-
-Eliminates:
-- async/sync mismatch
-- model object vs string confusion
-- scattered LLM creation
+Unified Model Manager — FINAL (stable + retry-aware)
 """
 
 import os
@@ -35,25 +30,40 @@ DEFAULT_EMBED_MODEL = "text-embedding-3-small"
 
 
 # ==============================
+# 🔹 SAFE ENV LOADER
+# ==============================
+
+def _safe_key(name: str) -> str:
+    key = os.getenv(name)
+
+    # 🔥 handle weird deployment cases
+    if callable(key):
+        key = key()
+
+    if not isinstance(key, str):
+        key = str(key)
+
+    if not key or "sk-" not in key:
+        raise ValueError(f"❌ Invalid {name}")
+
+    return key
+
+
+# ==============================
 # 🔹 Config Loader
 # ==============================
 
-def _get_config() -> Dict[str, Any]:
-    model = os.getenv("LLM_MODEL", DEFAULT_CHAT_MODEL)
+def _get_config(model_override=None) -> Dict[str, Any]:
+    model = model_override or os.getenv("LLM_MODEL", DEFAULT_CHAT_MODEL)
 
     if model not in ALLOWED_CHAT_MODELS:
-        raise ValueError(f"❌ Unauthorized chat model: {model}")
-
-    api_key = os.getenv("OPENAI_API_KEY")
-
-    if not isinstance(api_key, str) or not api_key:
-        raise ValueError("❌ OPENAI_API_KEY must be a valid string")
+        logger.warning(f"Using non-whitelisted model: {model}")
 
     return {
         "model": model,
         "temperature": float(os.getenv("LLM_TEMPERATURE", "0.1")),
         "max_tokens": int(os.getenv("LLM_MAX_TOKENS", "1024")),
-        "api_key": api_key,
+        "api_key": _safe_key("OPENAI_API_KEY"),
     }
 
 
@@ -61,14 +71,15 @@ def _get_config() -> Dict[str, Any]:
 # 🔹 Primary LLM
 # ==============================
 
-def get_primary_llm() -> ChatOpenAI:
-    cfg = _get_config()
+def get_primary_llm(model_override=None) -> ChatOpenAI:
+    cfg = _get_config(model_override)
 
     return ChatOpenAI(
         model=cfg["model"],
         temperature=cfg["temperature"],
         max_tokens=cfg["max_tokens"],
         api_key=cfg["api_key"],
+        streaming=False,  # 🔥 critical fix
     )
 
 
@@ -78,11 +89,12 @@ def get_primary_llm() -> ChatOpenAI:
 
 def get_fallback_llm() -> ChatOpenAI:
     return ChatOpenAI(
-        model=os.getenv("FALLBACK_MODEL", "meta-llama/llama-3-70b-instruct"),
+        model=os.getenv("FALLBACK_MODEL", "mistralai/mixtral-8x7b"),
         temperature=float(os.getenv("LLM_TEMPERATURE", "0.1")),
         max_tokens=int(os.getenv("LLM_MAX_TOKENS", "1024")),
         base_url="https://openrouter.ai/api/v1",
-        api_key=os.getenv("OPENROUTER_API_KEY"),
+        api_key=_safe_key("OPENROUTER_API_KEY"),
+        streaming=False,  # 🔥 critical
     )
 
 
@@ -90,18 +102,19 @@ def get_fallback_llm() -> ChatOpenAI:
 # 🔹 Unified Invocation
 # ==============================
 
-def invoke_llm(messages):
+def invoke_llm(messages, model_override=None):
     """
     Single entry point for ALL LLM calls
+    Supports retry controller model override
     """
 
-    primary = get_primary_llm()
+    primary = get_primary_llm(model_override)
 
     try:
         return primary.invoke(messages)
 
     except Exception as e:
-        logger.warning(f"Primary failed: {e}")
+        logger.warning(f"Primary failed → switching to fallback: {e}")
 
         fallback = get_fallback_llm()
 
@@ -124,5 +137,5 @@ def get_embed_model():
 
     return OpenAIEmbeddings(
         model=model_name,
-        openai_api_key=os.getenv("OPENAI_API_KEY"),
+        openai_api_key=_safe_key("OPENAI_API_KEY"),
     )
