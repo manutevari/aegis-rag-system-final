@@ -15,12 +15,13 @@ Query: {query}
 """
 
     try:
-        out = llm.invoke(prompt).content.strip().lower()
+        res = llm.invoke(prompt)
+        out = getattr(res, "content", "").strip().lower()
     except Exception:
         return {"intent": "unclear"}
 
-    # strict validation
+    # strict validation (fix)
     if out not in VALID_LABELS:
-        return {"intent": "unclear"}
+        out = "unclear"
 
     return {"intent": out}
