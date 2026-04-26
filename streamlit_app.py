@@ -86,7 +86,7 @@ with st.sidebar:
     st.metric("Cache size", f"{stats['size_mb']} MB")
 
     if st.button("🗑️ Clear cache"):
-        st.success(f"Cleared {st.session_state.cache.clear()} entries)
+        st.success(f"Cleared {st.session_state.cache.clear()} entries")
 
     st.divider()
     st.subheader("💡 Example queries")
