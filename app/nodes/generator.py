@@ -2,7 +2,7 @@
 Generator Node — Strict, grounded LLM answer generation.
 """
 
-import logging, os, re, time
+import logging, re, time
 from app.state import AgentState
 from app.utils.tracing import trace
 from app.core.models import invoke_llm
@@ -21,30 +21,17 @@ STRICT RULES:
 6. End with: Source: [policy name/code] — if available."""
 
 
-# ✅ BACKOFF WRAPPER (uses your invoke_llm)
-def safe_invoke_llm(messages, model_override=None, retries=3):
-    last_error = None
-
-    for i in range(retries):
-        try:
-            return invoke_llm(messages, model_override=model_override)
-
-        except Exception as e:
-            err = str(e)
-            last_error = err
-
-            # 🔥 Handle rate limit properly
-            if "429" in err or "quota" in err.lower():
-                wait = 2 ** i
-                logger.warning(f"[LLM] Rate limit hit. Retry in {wait}s...")
-                time.sleep(wait)
-                continue
-
-            # ❌ Don't retry other errors
-            logger.error(f"[LLM] Non-retryable error: {err}")
-            break
-
-    raise Exception(f"LLM failed after retries: {last_error}")
+# ✅ Minimal safe wrapper (no over-retry)
+def safe_invoke_llm(messages, model_override=None):
+    try:
+        return invoke_llm(messages, model_override=model_override)
+    except Exception as e:
+        err = str(e)
+        if "429" in err or "quota" in err.lower():
+            logger.warning("[LLM] Rate limited")
+        else:
+            logger.error(f"[LLM] Error: {err}")
+        raise
 
 
 def run(state: AgentState) -> AgentState:
@@ -52,7 +39,7 @@ def run(state: AgentState) -> AgentState:
     context = state.get("context", "")
     history = state.get("history") or []
     grade   = state.get("employee_grade", "")
-    model_override = state.get("model")  # from retry controller
+    model_override = state.get("model")
 
     grade_note = f" (Employee grade: {grade})" if grade else ""
 
@@ -64,13 +51,11 @@ def run(state: AgentState) -> AgentState:
             "content": f"POLICY CONTEXT:\n{context}\n\nQUESTION: {query}{grade_note}\n\nAnswer using ONLY the context above."
         })
 
-        # ✅ USE SAFE WRAPPER (THIS IS THE FIX)
         response = safe_invoke_llm(msgs, model_override=model_override)
 
-        # 🔥 Handle different response formats safely
+        # ✅ Robust extraction
         answer = getattr(response, "content", None)
         if not answer:
-            # fallback if OpenAI-style response
             try:
                 answer = response.choices[0].message.content
             except Exception:
@@ -82,6 +67,7 @@ def run(state: AgentState) -> AgentState:
         logger.error("Generation error: %s", e)
         answer = "⚠️ System busy or rate-limited. Please try again."
 
+    # ✅ Extract sources
     sources = re.findall(r"Source:\s*(.+)", answer)
 
     return trace(
@@ -89,7 +75,7 @@ def run(state: AgentState) -> AgentState:
             **state,
             "answer": answer,
             "sources": [s.strip() for s in sources],
-            "retry": False  # 🔥 CRITICAL: stop infinite retry loop
+            "retry": False  # ✅ HARD STOP (no loop)
         },
         node="generate",
         data={
