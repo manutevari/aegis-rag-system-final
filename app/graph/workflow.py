@@ -6,40 +6,41 @@ from app.state import AgentState
 # Nodes
 from app.nodes import (
     planner,
+    router,
+    chat,
     retrieval,
     context_assembler,
+    summarizer,
     token_manager,
+    compute,
     generator,
     verifier,
-    router,
     retry_controller,
     hitl,
     trace_node,
 )
 
 # -----------------------------
-# 🔒 Guard Functions (Critical)
+# 🔒 Guard Functions
 # -----------------------------
 
 def guard_halt(state: AgentState):
-    """Global halt guard."""
     if state.get("halted"):
         return "halt"
     return "continue"
 
 
 def guard_route(state: AgentState):
-    """Route decision from router node."""
-    route = state.get("route", "rag")
-    if route == "rag":
-        return "rag"
-    if route == "tools":
-        return "tools"
-    return "direct"
+    intent = state.get("intent", "rag")
+
+    if intent == "chat":
+        return "chat"
+    if intent == "compute":
+        return "compute"
+    return "rag"
 
 
 def guard_context(state: AgentState):
-    """RAG lock: no context → stop."""
     ctx = (state.get("context") or "").strip()
     if len(ctx) < 50:
         return "no_context"
@@ -47,23 +48,17 @@ def guard_context(state: AgentState):
 
 
 def guard_verified(state: AgentState):
-    """Verifier gate."""
-    if state.get("verified") is True:
-        return "verified"
-    return "rejected"
+    return "verified" if state.get("verified") else "rejected"
 
 
 def guard_retry(state: AgentState):
-    """Retry policy: only if confidence low and retries left."""
     retries = int(state.get("retry_count", 0))
     max_r = int(state.get("max_retries", 1))
     conf = float(state.get("confidence", 0.0))
 
-    # ❌ Never retry if halted or no context
     if state.get("halted"):
         return "no_retry"
 
-    # Retry only on low confidence
     if conf < 0.35 and retries < max_r:
         return "retry"
 
@@ -82,10 +77,15 @@ def build_graph():
     graph.add_node("planner", planner)
     graph.add_node("router", router)
 
+    # NEW
+    graph.add_node("chat", chat)
+    graph.add_node("compute", compute)
+    graph.add_node("summarizer", summarizer)
+
+    # EXISTING
     graph.add_node("retrieval", retrieval)
     graph.add_node("context_assembler", context_assembler)
     graph.add_node("token_manager", token_manager)
-
     graph.add_node("generator", generator)
     graph.add_node("verifier", verifier)
 
@@ -96,22 +96,28 @@ def build_graph():
     # -------- Entry --------
     graph.set_entry_point("trace_start")
 
-    # -------- Linear Start --------
+    # -------- Initial Flow --------
     graph.add_edge("trace_start", "planner")
     graph.add_edge("planner", "router")
 
-    # -------- Routing --------
+    # -------- Routing (UPGRADED) --------
     graph.add_conditional_edges(
         "router",
         guard_route,
         {
+            "chat": "chat",
+            "compute": "compute",
             "rag": "retrieval",
-            "tools": "generator",   # if you have tool executor, place it here
-            "direct": "generator",
         },
     )
 
-    # -------- RAG Path --------
+    # -------- CHAT (direct exit) --------
+    graph.add_edge("chat", "trace_end")
+
+    # -------- COMPUTE (direct exit) --------
+    graph.add_edge("compute", "trace_end")
+
+    # -------- RAG FLOW --------
     graph.add_edge("retrieval", "context_assembler")
     graph.add_edge("context_assembler", "token_manager")
 
@@ -120,15 +126,18 @@ def build_graph():
         "token_manager",
         guard_context,
         {
-            "ok": "generator",
-            "no_context": "hitl",   # or END if you prefer hard stop
+            "ok": "summarizer",   # NEW insertion
+            "no_context": "hitl",
         },
     )
+
+    # NEW: summarization before generation
+    graph.add_edge("summarizer", "generator")
 
     # -------- Generation --------
     graph.add_edge("generator", "verifier")
 
-    # -------- Verification Gate --------
+    # -------- Verification --------
     graph.add_conditional_edges(
         "verifier",
         guard_verified,
@@ -151,14 +160,14 @@ def build_graph():
     # -------- HITL --------
     graph.add_edge("hitl", "trace_end")
 
-    # -------- Global Halt Guards --------
-    # Apply halt checks after key nodes
+    # -------- Global Halt --------
     for node in [
         "planner",
         "router",
         "retrieval",
         "context_assembler",
         "token_manager",
+        "summarizer",
         "generator",
         "verifier",
         "retry_controller",
@@ -168,7 +177,7 @@ def build_graph():
             guard_halt,
             {
                 "halt": "trace_end",
-                "continue": None,  # fallthrough to existing edges
+                "continue": None,
             },
         )
 
