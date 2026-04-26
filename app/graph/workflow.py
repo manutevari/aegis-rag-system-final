@@ -1,81 +1,178 @@
-"""
-Merged Workflow — Simple backbone with LangGraph scalability
-"""
+# app/graph/workflow.py
 
-import logging
 from langgraph.graph import StateGraph, END
-from app.state import AgentState, to_state
-from app.core.vector_store import vector_db
-from app.core.models import get_chat_model
+from app.state import AgentState
 
-logger = logging.getLogger(__name__)
+# Nodes
+from app.nodes import (
+    planner,
+    retrieval,
+    context_assembler,
+    token_manager,
+    generator,
+    verifier,
+    router,
+    retry_controller,
+    hitl,
+    trace_node,
+)
 
-# ── Simple node wrappers ──
-def planner_run(state: AgentState) -> AgentState:
-    """Route query based on keywords."""
-    state = to_state(state)
-    q = state.query.lower()
-    if "budget" in q or "cost" in q:
-        state.route = "sql"
-    elif "calculate" in q or "compute" in q:
-        state.route = "compute"
-    else:
-        state.route = "retrieval"
-    return state
+# -----------------------------
+# 🔒 Guard Functions (Critical)
+# -----------------------------
 
-def retrieval_run(state: AgentState) -> AgentState:
-    """Fetch from vector store."""
-    state = to_state(state)
-    docs = vector_db.search(state.query, top_k=5)
-    state.retrieval_docs = [d.page_content for d in docs]
-    state.context = " ".join(state.retrieval_docs)
-    
-    # Generate answer
-    model = get_chat_model()
-    prompt = f"Based on: {state.context}\n\nAnswer: {state.query}"
-    response = model.invoke(prompt)
-    state.answer = response.content if hasattr(response, 'content') else str(response)
-    
-    return state
+def guard_halt(state: AgentState):
+    """Global halt guard."""
+    if state.get("halted"):
+        return "halt"
+    return "continue"
 
-def sql_run(state: AgentState) -> AgentState:
-    """Execute SQL (stub)."""
-    state = to_state(state)
-    state.answer = f"SQL query result for: {state.query}"
-    return state
 
-def compute_run(state: AgentState) -> AgentState:
-    """Execute computation (stub)."""
-    state = to_state(state)
-    state.answer = f"Computed result for: {state.query}"
-    return state
+def guard_route(state: AgentState):
+    """Route decision from router node."""
+    route = state.get("route", "rag")
+    if route == "rag":
+        return "rag"
+    if route == "tools":
+        return "tools"
+    return "direct"
 
-def _route_after_planner(state: AgentState) -> str:
-    """Route decision."""
-    return state.route
+
+def guard_context(state: AgentState):
+    """RAG lock: no context → stop."""
+    ctx = (state.get("context") or "").strip()
+    if len(ctx) < 50:
+        return "no_context"
+    return "ok"
+
+
+def guard_verified(state: AgentState):
+    """Verifier gate."""
+    if state.get("verified") is True:
+        return "verified"
+    return "rejected"
+
+
+def guard_retry(state: AgentState):
+    """Retry policy: only if confidence low and retries left."""
+    retries = int(state.get("retry_count", 0))
+    max_r = int(state.get("max_retries", 1))
+    conf = float(state.get("confidence", 0.0))
+
+    # ❌ Never retry if halted or no context
+    if state.get("halted"):
+        return "no_retry"
+
+    # Retry only on low confidence
+    if conf < 0.35 and retries < max_r:
+        return "retry"
+
+    return "no_retry"
+
+
+# -----------------------------
+# 🧠 Graph Builder
+# -----------------------------
 
 def build_graph():
-    """Build LangGraph workflow."""
-    g = StateGraph(AgentState)
+    graph = StateGraph(AgentState)
 
-    # Add nodes
-    g.add_node("planner", planner_run)
-    g.add_node("retrieval", retrieval_run)
-    g.add_node("sql", sql_run)
-    g.add_node("compute", compute_run)
+    # -------- Nodes --------
+    graph.add_node("trace_start", trace_node)
+    graph.add_node("planner", planner)
+    graph.add_node("router", router)
 
-    # Entry
-    g.set_entry_point("planner")
+    graph.add_node("retrieval", retrieval)
+    graph.add_node("context_assembler", context_assembler)
+    graph.add_node("token_manager", token_manager)
 
-    # Conditional routing
-    g.add_conditional_edges(
-        "planner", _route_after_planner,
-        {"retrieval": "retrieval", "sql": "sql", "compute": "compute"}
+    graph.add_node("generator", generator)
+    graph.add_node("verifier", verifier)
+
+    graph.add_node("retry_controller", retry_controller)
+    graph.add_node("hitl", hitl)
+    graph.add_node("trace_end", trace_node)
+
+    # -------- Entry --------
+    graph.set_entry_point("trace_start")
+
+    # -------- Linear Start --------
+    graph.add_edge("trace_start", "planner")
+    graph.add_edge("planner", "router")
+
+    # -------- Routing --------
+    graph.add_conditional_edges(
+        "router",
+        guard_route,
+        {
+            "rag": "retrieval",
+            "tools": "generator",   # if you have tool executor, place it here
+            "direct": "generator",
+        },
     )
 
-    # End
-    g.add_edge("retrieval", END)
-    g.add_edge("sql", END)
-    g.add_edge("compute", END)
+    # -------- RAG Path --------
+    graph.add_edge("retrieval", "context_assembler")
+    graph.add_edge("context_assembler", "token_manager")
 
-    return g.compile()
+    # RAG LOCK
+    graph.add_conditional_edges(
+        "token_manager",
+        guard_context,
+        {
+            "ok": "generator",
+            "no_context": "hitl",   # or END if you prefer hard stop
+        },
+    )
+
+    # -------- Generation --------
+    graph.add_edge("generator", "verifier")
+
+    # -------- Verification Gate --------
+    graph.add_conditional_edges(
+        "verifier",
+        guard_verified,
+        {
+            "verified": "trace_end",
+            "rejected": "retry_controller",
+        },
+    )
+
+    # -------- Retry Loop --------
+    graph.add_conditional_edges(
+        "retry_controller",
+        guard_retry,
+        {
+            "retry": "generator",
+            "no_retry": "hitl",
+        },
+    )
+
+    # -------- HITL --------
+    graph.add_edge("hitl", "trace_end")
+
+    # -------- Global Halt Guards --------
+    # Apply halt checks after key nodes
+    for node in [
+        "planner",
+        "router",
+        "retrieval",
+        "context_assembler",
+        "token_manager",
+        "generator",
+        "verifier",
+        "retry_controller",
+    ]:
+        graph.add_conditional_edges(
+            node,
+            guard_halt,
+            {
+                "halt": "trace_end",
+                "continue": None,  # fallthrough to existing edges
+            },
+        )
+
+    # -------- Exit --------
+    graph.add_edge("trace_end", END)
+
+    return graph.compile()
