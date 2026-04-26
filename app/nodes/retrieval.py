@@ -1,10 +1,10 @@
 import logging
 import os
 from typing import List, Any
-
 from app.state import AgentState
 from app.tools.retriever import PolicyRetriever
 from app.utils.tracing import trace
+from app.core.utils import cross_encoder  # ✅ add rerank here
 
 logger = logging.getLogger(__name__)
 _retriever: PolicyRetriever | None = None
@@ -12,7 +12,7 @@ _retriever: PolicyRetriever | None = None
 MAX_HISTORY_CHARS = 500
 MAX_CHUNK_TOKENS = 120
 DEFAULT_TOP_K = 2
-
+MAX_CONTEXT_CHARS = 1500  # ✅ global cap
 
 def _get_retriever() -> PolicyRetriever:
     global _retriever
@@ -20,30 +20,8 @@ def _get_retriever() -> PolicyRetriever:
         _retriever = PolicyRetriever()
     return _retriever
 
-
-def _deduplicate_docs(docs: List[Any]) -> List[Any]:
-    seen = set()
-    unique_docs = []
-    for d in docs:
-        content = getattr(d, "page_content", str(d))
-        if content not in seen:
-            seen.add(content)
-            unique_docs.append(d)
-    return unique_docs
-
-
 def _trim_text(text: str, max_tokens: int) -> str:
-    words = text.split()
-    return " ".join(words[:max_tokens])
-
-
-def _compress_docs(docs: List[Any], k: int) -> List[str]:
-    texts = []
-    for d in docs[:k]:
-        content = getattr(d, "page_content", str(d))
-        texts.append(_trim_text(content, MAX_CHUNK_TOKENS))
-    return texts
-
+    return " ".join(text.split()[:max_tokens])
 
 def run(state: AgentState) -> AgentState:
     query = state.get("query", "")
@@ -51,15 +29,12 @@ def run(state: AgentState) -> AgentState:
     history = state.get("history") or []
     vector_memory = state.get("vector_memory")
 
-    top_k = int(os.getenv("RETRIEVAL_TOP_K", DEFAULT_TOP_K))
-    top_k = min(top_k, 3)
-
+    top_k = min(int(os.getenv("RETRIEVAL_TOP_K", DEFAULT_TOP_K)), 3)
     base_query = f"[Grade: {grade}] {query}" if grade else query
 
     if history:
-        history_text = " ".join([m.get("content", "") for m in history])
-        history_trimmed = history_text[-MAX_HISTORY_CHARS:]
-        enhanced_query = f"{base_query}\nContext:\n{history_trimmed}"
+        history_text = " ".join([m.get("content", "") for m in history])[-MAX_HISTORY_CHARS:]
+        enhanced_query = f"{base_query}\nContext:\n{history_text}"
     else:
         enhanced_query = base_query
 
@@ -71,20 +46,23 @@ def run(state: AgentState) -> AgentState:
 
     if vector_memory:
         try:
-            memory_docs = vector_memory.search(query, k=1)
-            docs.extend(memory_docs)
+            docs.extend(vector_memory.search(query, k=1)[:1])  # ✅ strict limit
         except Exception:
             pass
 
-    docs = _deduplicate_docs(docs)
-    compressed_chunks = _compress_docs(docs, k=top_k)
+    # ✅ rerank before compression
+    try:
+        reranked = cross_encoder.rank(query, docs)
+        docs = [d for d, _ in reranked[:top_k]]
+    except Exception:
+        pass
+
+    # ✅ compress and cap context
+    compressed = [_trim_text(getattr(d, "page_content", str(d)), MAX_CHUNK_TOKENS) for d in docs]
+    context = "\n\n".join(compressed)[:MAX_CONTEXT_CHARS]
 
     return trace(
-        {
-            **state,
-            "retrieval_docs": docs,
-            "context": "\n\n".join(compressed_chunks),  # ✅ FIXED
-        },
+        {**state, "retrieval_docs": docs, "context": context},
         node="retrieval",
-        data={"chunks": len(compressed_chunks)},
+        data={"chunks": len(compressed), "chars": len(context)},
     )
