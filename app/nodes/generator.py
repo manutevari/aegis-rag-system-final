@@ -3,11 +3,10 @@ Generator Node — Strict, grounded LLM answer generation.
 Uses ONLY the assembled context. Never invents numbers.
 """
 
-import logging, os, re, time
-from typing import List
+import logging, os, re
 from app.state import AgentState
 from app.utils.tracing import trace
-from app.core.models import get_chat_model
+from app.core.models import invoke_llm
 from langchain_openai import ChatOpenAI
 
 logger = logging.getLogger(__name__)
@@ -24,49 +23,6 @@ STRICT RULES:
 6. End with: Source: [policy name/code] — if available."""
 
 
-# ── SAFE INVOKE (ADDED) ───────────────────────────────────────────────────────
-
-def safe_invoke(llm, msgs):
-    for i in range(2):
-        try:
-            return llm.invoke(msgs)
-        except Exception as e:
-            if "429" in str(e):
-                time.sleep(2 ** i)
-            else:
-                raise
-    raise Exception("LLM failed")
-
-
-# ── LLM INVOCATION WITH FALLBACK ──────────────────────────────────────────────
-
-def invoke_with_fallback(msgs):
-    primary_model = get_chat_model()
-
-    primary = ChatOpenAI(
-        model=primary_model,
-        temperature=float(os.getenv("LLM_TEMPERATURE", "0.1")),
-        max_tokens=int(os.getenv("LLM_MAX_TOKENS", "1024")),
-    )
-
-    fallback = ChatOpenAI(
-        model="openrouter/free",
-        temperature=float(os.getenv("LLM_TEMPERATURE", "0.1")),
-        max_tokens=int(os.getenv("LLM_MAX_TOKENS", "1024")),
-        base_url="https://openrouter.ai/api/v1",
-        api_key=os.getenv("OPENROUTER_API_KEY"),
-    )
-
-    # Try primary (with retry via safe_invoke)
-    try:
-        return safe_invoke(primary, msgs)
-    except Exception as e:
-        logger.warning(f"Primary LLM failed, switching to fallback: {e}")
-
-    # Fallback to OpenRouter (with retry)
-    return safe_invoke(fallback, msgs)
-
-
 # ── MAIN NODE ─────────────────────────────────────────────────────────────────
 
 def run(state: AgentState) -> AgentState:
@@ -74,10 +30,12 @@ def run(state: AgentState) -> AgentState:
     context = state.get("context", "")
     history = state.get("history") or []
     grade   = state.get("employee_grade", "")
+    model_override = state.get("model")  # from retry controller
 
     grade_note = f" (Employee grade: {grade})" if grade else ""
 
     try:
+        # Build messages
         msgs = [{"role": "system", "content": _SYSTEM}]
         msgs += history[-4:]
         msgs.append({
@@ -85,17 +43,36 @@ def run(state: AgentState) -> AgentState:
             "content": f"POLICY CONTEXT:\n{context}\n\nQUESTION: {query}{grade_note}\n\nAnswer using ONLY the context above."
         })
 
-        response = invoke_with_fallback(msgs)
+        # 🔥 MODEL SELECTION (Unified + Override Support)
+        if model_override:
+            llm = ChatOpenAI(
+                model=model_override,
+                temperature=float(os.getenv("LLM_TEMPERATURE", "0.1")),
+                max_tokens=int(os.getenv("LLM_MAX_TOKENS", "1024")),
+                api_key=str(os.getenv("OPENAI_API_KEY")),  # ensure string
+            )
+            response = llm.invoke(msgs)
+        else:
+            response = invoke_llm(msgs)
+
         answer = response.content.strip()
 
     except Exception as e:
         logger.error("Generation error: %s", e)
         answer = f"⚠️ Generation error: {e}"
 
+    # Extract sources
     sources = re.findall(r"Source:\s*(.+)", answer)
 
     return trace(
-        {**state, "answer": answer, "sources": [s.strip() for s in sources]},
+        {
+            **state,
+            "answer": answer,
+            "sources": [s.strip() for s in sources]
+        },
         node="generate",
-        data={"len": len(answer)}
+        data={
+            "len": len(answer),
+            "model": model_override or "default"
+        }
     )
