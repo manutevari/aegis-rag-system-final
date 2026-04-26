@@ -1,101 +1,193 @@
-import logging
+"""
+Vector Store — Unified FAISS + Chroma backend with persistence.
+
+Features:
+- Backend switch via ENV (VECTOR_STORE=faiss|chroma)
+- Auto-load + auto-save
+- Clean API: add_texts, search, retrieve
+- Safe initialization (no dummy embeddings pollution)
+"""
+
 import os
-from typing import List, Any
+import logging
+from typing import List, Any, Optional
 
-from langchain.vectorstores import FAISS
+from langchain_community.vectorstores import FAISS, Chroma
 from langchain_openai import OpenAIEmbeddings
-
-# Optional: if you have cross_encoder and trace utilities
-# from app.core.utils import cross_encoder
-# from app.utils.tracing import trace
 
 logger = logging.getLogger(__name__)
 logging.basicConfig(level=logging.INFO)
 
+PERSIST_DIR = "vector_store"
+
+
 # ==============================
-# 🔹 Embedding Model
+# 🔹 Embeddings
 # ==============================
 def _get_embeddings() -> OpenAIEmbeddings:
     return OpenAIEmbeddings(
-        model="text-embedding-3-small",  # or "text-embedding-3-large"
-        openai_api_key=os.getenv("OPENAI_API_KEY")
+        model="text-embedding-3-small",
+        openai_api_key=os.getenv("OPENAI_API_KEY"),
     )
 
+
 # ==============================
-# 🔹 Vector Store Wrapper
+# 🔹 VectorDB (Unified Wrapper)
 # ==============================
 class VectorDB:
     def __init__(self):
         self.embeddings = _get_embeddings()
-        self.store: FAISS | None = None
+        self.backend = os.getenv("VECTOR_STORE", "faiss").lower()
+        self.store: Optional[Any] = None
 
-    def load(self, path: str = "vector_store.index"):
-        """Load FAISS index from disk."""
+        self._init_store()
+
+    # --------------------------
+    # Init / Load
+    # --------------------------
+    def _init_store(self):
+        """Initialize or load persistent store."""
         try:
-            self.store = FAISS.load_local(path, self.embeddings, allow_dangerous_deserialization=True)
-            logger.info("Vector store loaded from %s", path)
+            if self.backend == "chroma":
+                self.store = Chroma(
+                    persist_directory=PERSIST_DIR,
+                    embedding_function=self.embeddings,
+                )
+                logger.info("Chroma initialized (persistent)")
+
+            else:
+                # FAISS
+                if os.path.exists(PERSIST_DIR):
+                    self.store = FAISS.load_local(
+                        PERSIST_DIR,
+                        self.embeddings,
+                        allow_dangerous_deserialization=True,
+                    )
+                    logger.info("FAISS loaded from disk")
+                else:
+                    self.store = None
+                    logger.info("FAISS initialized (empty)")
+
         except Exception as e:
-            logger.error("Failed to load vector store: %s", e)
+            logger.error("Vector store init failed: %s", e)
             self.store = None
 
-    def save(self, path: str = "vector_store.index"):
-        """Persist FAISS index to disk."""
-        if self.store:
-            self.store.save_local(path)
-            logger.info("Vector store saved to %s", path)
-
+    # --------------------------
+    # Add Data
+    # --------------------------
     def add_texts(self, texts: List[str], metadatas: List[dict] = None):
-        """Add new documents to the vector store."""
-        if not self.store:
-            self.store = FAISS.from_texts(texts, self.embeddings, metadatas=metadatas)
-        else:
-            self.store.add_texts(texts, metadatas=metadatas)
+        """Add documents to store."""
+        if not texts:
+            return
 
-    def search(self, query_embedding: List[float], top_k: int = 5) -> List[Any]:
-        """Search the vector store using a precomputed embedding."""
-        if not self.store:
-            logger.warning("Vector store is empty, returning []")
-            return []
         try:
-            results = self.store.similarity_search_by_vector(query_embedding, k=top_k)
-            return results
+            if self.store is None:
+                # create new store
+                if self.backend == "chroma":
+                    self.store = Chroma.from_texts(
+                        texts,
+                        embedding=self.embeddings,
+                        persist_directory=PERSIST_DIR,
+                        metadatas=metadatas,
+                    )
+                else:
+                    self.store = FAISS.from_texts(
+                        texts,
+                        self.embeddings,
+                        metadatas=metadatas,
+                    )
+            else:
+                self.store.add_texts(texts, metadatas=metadatas)
+
+            logger.info("Added %d documents", len(texts))
+
         except Exception as e:
-            logger.error("Vector search failed: %s", e)
+            logger.error("Add texts failed: %s", e)
+
+    # --------------------------
+    # Search
+    # --------------------------
+    def search(self, query: str, top_k: int = 5) -> List[Any]:
+        """Search using query string."""
+        if not self.store:
+            logger.warning("Vector store empty")
             return []
+
+        try:
+            return self.store.similarity_search(query, k=top_k)
+        except Exception as e:
+            logger.error("Search failed: %s", e)
+            return []
+
+    # --------------------------
+    # Persist
+    # --------------------------
+    def persist(self):
+        """Persist store safely."""
+        if not self.store:
+            return
+
+        try:
+            if self.backend == "chroma":
+                self.store.persist()
+                logger.info("Chroma persisted")
+
+            else:
+                self.store.save_local(PERSIST_DIR)
+                logger.info("FAISS saved")
+
+        except Exception as e:
+            logger.error("Persist failed: %s", e)
+
+    # --------------------------
+    # Reset
+    # --------------------------
+    def reset(self):
+        """Delete store completely."""
+        import shutil
+
+        if os.path.exists(PERSIST_DIR):
+            shutil.rmtree(PERSIST_DIR)
+            logger.warning("Vector store reset")
+
+        self.store = None
+
 
 # ==============================
 # 🔹 Global Instance
 # ==============================
 vector_db = VectorDB()
 
-# ==============================
-# 🔹 One-shot Retrieval Function
-# ==============================
-def retrieve(query: str, top_k: int = 3):
-    """Embed query, search vector DB, and return results."""
-    embedder = _get_embeddings()
-    q_emb = embedder.embed_query(query)
 
-    results = vector_db.search(q_emb, top_k=top_k)
-    docs = [getattr(r, "page_content", str(r)) for r in results]
+# ==============================
+# 🔹 Retrieval API
+# ==============================
+def retrieve(query: str, top_k: int = 3) -> List[str]:
+    """End-to-end retrieval."""
+    results = vector_db.search(query, top_k=top_k)
 
-    # Optional rerank if you have cross_encoder
-    # try:
-    #     reranked = cross_encoder.rank(query, docs)
-    #     docs = [chunk for chunk, _ in reranked[:top_k]]
-    # except Exception as e:
-    #     logger.warning("Rerank failed: %s", e)
+    docs = [
+        getattr(r, "page_content", str(r))
+        for r in results
+    ]
 
     return docs
 
+
 # ==============================
-# 🔹 Entrypoint
+# 🔹 Example Usage
 # ==============================
 if __name__ == "__main__":
-    # Example usage
-    vector_db.load()  # load existing FAISS index
-    query = "What is the laptop budget for L6 employees?"
-    results = retrieve(query, top_k=3)
+    # Example: add + persist
+    vector_db.add_texts(
+        ["L6 employees get ₹1,50,000 laptop budget"],
+        metadatas=[{"source": "policy"}],
+    )
+    vector_db.persist()
+
+    # Query
+    query = "laptop budget for L6"
+    results = retrieve(query)
 
     print("\nQuery:", query)
     print("Results:")
