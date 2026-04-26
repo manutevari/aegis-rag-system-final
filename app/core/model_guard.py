@@ -1,40 +1,53 @@
 import streamlit as st
 
-# ✅ STRICT ALLOWED MODELS
+# ==============================
+# ✅ USER-SELECTABLE MODELS (STRICT)
+# ==============================
 
 ALLOWED_LLM_MODELS = {
-"gpt-5-nano",
-"gpt-5-mini",
-"gpt-4o-mini"
+    "gpt-5-nano",
+    "gpt-5-mini",
+    "gpt-4o-mini",
 }
 
 ALLOWED_EMBED_MODELS = {
-"text-embedding-3-large",
-"text-embedding-3-small"
+    "text-embedding-3-large",
+    "text-embedding-3-small",
 }
 
+
+# ==============================
+# ✅ LLM MODEL (USER INPUT)
+# ==============================
+
 def get_llm_model():
-model = st.secrets.get("MODEL_NAME")
+    """
+    This ONLY controls OpenAI fallback model.
+    OpenRouter models are handled internally (invoke_llm).
+    """
 
-```
-if not model:
-    raise ValueError("MODEL_NAME not set in Streamlit secrets")
+    model = st.secrets.get("MODEL_NAME")
 
-if model not in ALLOWED_LLM_MODELS:
-    raise ValueError(f"❌ Unauthorized LLM model: {model}")
+    if not model:
+        raise ValueError("MODEL_NAME not set in Streamlit secrets")
 
-return model
-```
+    if model not in ALLOWED_LLM_MODELS:
+        raise ValueError(f"❌ Unauthorized LLM model: {model}")
+
+    return model
+
+
+# ==============================
+# ✅ EMBEDDING MODEL
+# ==============================
 
 def get_embedding_model():
-model = st.secrets.get("EMBED_MODEL")
+    model = st.secrets.get("EMBED_MODEL")
 
-```
-if not model:
-    raise ValueError("EMBED_MODEL not set in Streamlit secrets")
+    if not model:
+        raise ValueError("EMBED_MODEL not set in Streamlit secrets")
 
-if model not in ALLOWED_EMBED_MODELS:
-    raise ValueError(f"❌ Unauthorized embedding model: {model}")
+    if model not in ALLOWED_EMBED_MODELS:
+        raise ValueError(f"❌ Unauthorized embedding model: {model}")
 
-return model
-```
+    return model
