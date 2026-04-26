@@ -1,4 +1,5 @@
 import os
+import streamlit as st
 from langchain.chat_models import init_chat_model
 from langchain.embeddings import OpenAIEmbeddings
 
@@ -6,16 +7,8 @@ from langchain.embeddings import OpenAIEmbeddings
 # 🔹 Allowed Models
 # ==============================
 
-ALLOWED_CHAT_MODELS = {
-    "gpt-5-nano",
-    "gpt-5-mini",
-    "gpt-4o-mini",
-}
-
-ALLOWED_EMBED_MODELS = {
-    "text-embedding-3-small",
-    "text-embedding-3-large",
-}
+ALLOWED_CHAT_MODELS = {"gpt-5-nano", "gpt-5-mini", "gpt-4o-mini"}
+ALLOWED_EMBED_MODELS = {"text-embedding-3-small", "text-embedding-3-large"}
 
 DEFAULT_CHAT_MODEL = "gpt-4o-mini"
 DEFAULT_EMBED_MODEL = "text-embedding-3-small"
@@ -35,7 +28,6 @@ def get_chat_model():
         api_key=os.getenv("OPENAI_API_KEY")
     )
 
-    # Attach middleware safely
     try:
         from middleware import orchestrator_middleware
         model.middleware = [orchestrator_middleware]
@@ -66,7 +58,6 @@ audit_store = []
 
 def log_audit(stage: str, data: dict):
     audit_store.append({"stage": stage, "data": data})
-    # Optional: persist to file/db
 
 # ==============================
 # 🔹 Pipeline Helpers
@@ -76,28 +67,29 @@ def expand_query(user_query: str) -> list[str]:
     return [user_query, f"Explain {user_query} in simple terms"]
 
 def hyde(user_query: str, enable: bool = False) -> str:
-    if not enable:
-        return ""
-    return f"Hypothetical doc for: {user_query}"
+    return f"Hypothetical doc for: {user_query}" if enable else ""
 
+# ✅ Retrieval wired to vector_db
+from app.core.vector_store import vector_db
 def retrieve(query_embedding, top_k: int = 5) -> list[str]:
-    # Replace with actual vector DB call
-    # Example: results = vector_db.search(query_embedding, top_k=top_k)
-    results = []  # placeholder
-    return [str(r) for r in results]
+    results = vector_db.search(query_embedding, top_k=top_k)
+    return [getattr(r, "page_content", str(r)) for r in results]
 
+# ✅ Rerank wired to cross_encoder
+from app.core.utils import cross_encoder
 def rerank(chunks: list[str], query: str, cutoff: int = 3) -> list[str]:
-    # Replace with actual cross-encoder rerank
-    # Example: scores = cross_encoder.rank(query, chunks)
-    scores = [(chunk, i) for i, chunk in enumerate(chunks)]
+    scores = cross_encoder.rank(query, chunks)
     return [chunk for chunk, _ in scores[:cutoff]]
 
+# ✅ PII Redaction wired
+from app.core.utils import redact
 def generate_answer(query: str, context_chunks: list[str]) -> str:
     context = "\n\n".join(context_chunks)
     prompt = f"Answer based only on context:\n{context}\n\nQ: {query}\nA:"
     chat_model = get_chat_model()
     resp = chat_model.invoke(prompt)
-    return resp.content if hasattr(resp, "content") else str(resp)
+    raw = resp.content if hasattr(resp, "content") else str(resp)
+    return redact(raw)
 
 # ==============================
 # 🔹 Pipeline Runner
@@ -128,9 +120,11 @@ def run_pipeline(user_query: str):
     return answer
 
 # ==============================
-# 🔹 Example Usage
+# 🔹 Streamlit Frontend
 # ==============================
 
 if __name__ == "__main__":
-    query = "Explain quantum entanglement"
-    print(run_pipeline(query))
+    st.title("Aegis RAG System")
+    query = st.text_input("Ask a question:")
+    if query:
+        st.write(run_pipeline(query))
