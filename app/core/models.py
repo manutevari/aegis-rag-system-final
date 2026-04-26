@@ -204,3 +204,26 @@ def get_embed_model():
         model=model_name,
         openai_api_key=key,
     )
+# ==============================
+# 🔹 COMPATIBILITY WRAPPER (CRITICAL FIX)
+# ==============================
+
+class LLMWrapper:
+    def __init__(self, model_override=None, max_tokens=120, temperature=0):
+        self.model_override = model_override
+        self.max_tokens = max_tokens
+        self.temperature = temperature
+
+    def invoke(self, prompt: str):
+        messages = [{"role": "user", "content": prompt}]
+        res = invoke_llm(
+            messages,
+            model_override=self.model_override,
+            max_tokens=self.max_tokens,
+            temperature=self.temperature,
+        )
+        return res
+
+
+def get_llm(model_override=None, max_tokens=120, temperature=0):
+    return LLMWrapper(model_override, max_tokens, temperature)
