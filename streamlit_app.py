@@ -1,26 +1,45 @@
 import os, sys, asyncio, time
 
-# Fix import path
-sys.path.append(os.path.dirname(os.path.abspath(__file__)))
-sys.path.append(os.getcwd())
+# ✅ FIXED: deterministic path resolution (REQUIRED FOR DEPLOYMENT)
+ROOT_DIR = os.path.dirname(os.path.abspath(__file__))
+if ROOT_DIR not in sys.path:
+    sys.path.insert(0, ROOT_DIR)
+
+PARENT_DIR = os.path.dirname(ROOT_DIR)
+if PARENT_DIR not in sys.path:
+    sys.path.insert(0, PARENT_DIR)
+
+os.chdir(ROOT_DIR)
 
 """
 Streamlit UI — Decision-Grade RAG Chatbot
 Features: chat history · execution trace viewer · HITL review panel · cache stats
 """
 
-from dotenv import load_dotenv; load_dotenv()
+from dotenv import load_dotenv
+load_dotenv(os.path.join(ROOT_DIR, ".env"))
 
 import streamlit as st
 from app.core.models import get_chat_model, get_embed_model
 
-# Initialize models (FIXED: removed duplicate calls)
+# Initialize models
 CHAT_MODEL = get_chat_model()
 EMBED_MODEL = get_embed_model()
 
 from app.graph.workflow import build_graph
 from app.utils.pickle_cache import PickleCache
 from app.utils.encryption import encrypt, decrypt
+
+# ✅ FIXED: safe async runner (prevents Streamlit asyncio crash)
+def run_async(coro):
+    try:
+        loop = asyncio.get_event_loop()
+        if loop.is_running():
+            return asyncio.create_task(coro)
+        else:
+            return loop.run_until_complete(coro)
+    except RuntimeError:
+        return asyncio.run(coro)
 
 st.set_page_config(
     page_title="Policy RAG",
@@ -52,7 +71,7 @@ with st.sidebar:
 
     use_cache = st.toggle("Cache answers", True)
     hitl_mode = st.selectbox("HITL Mode", ["auto","queue","cli"])
-    os.environ["HITL_MODE"] = hitl_mode  # unchanged (as requested)
+    os.environ["HITL_MODE"] = hitl_mode
 
     grade_override = st.text_input("Employee grade (optional)", placeholder="e.g. L4, VP")
 
@@ -138,8 +157,8 @@ with col_chat:
                     if grade_override:
                         init_state["employee_grade"] = grade_override.strip().upper()
 
-                    # ✅ FIXED: asyncio usage
-                    result = asyncio.run(graph.ainvoke(init_state))
+                    # ✅ FIXED async execution
+                    result = run_async(graph.ainvoke(init_state))
 
                     answer      = result.get("answer", "No answer generated.")
                     sources     = result.get("sources", [])
