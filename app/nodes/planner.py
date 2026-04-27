@@ -42,10 +42,7 @@ _SQL_KW = [
     "hotel", "meal", "daily", "monthly", "annual", "budget",
 ]
 
-_COMPUTE_KW = [
-    "calculate", "total", "compute", "multiply", "cost",
-]
-
+_COMPUTE_KW = ["calculate", "total", "compute", "multiply", "cost"]
 _NUMPY_KW = ["mean", "average", "std", "array", "sum"]
 _PANDAS_KW = ["csv", "dataframe", "table", "groupby"]
 _PLOT_KW = ["plot", "chart", "graph"]
@@ -85,66 +82,36 @@ def _detect_grade(text: str):
 
 def _advanced_route(q: str):
     q = q.lower()
-
-    if any(k in q for k in _NUMPY_KW):
-        return "numpy_compute"
-
-    if any(k in q for k in _PANDAS_KW):
-        return "pandas_query"
-
-    if any(k in q for k in _PLOT_KW):
-        return "plot_chart"
-
+    if any(k in q for k in _NUMPY_KW): return "numpy_compute"
+    if any(k in q for k in _PANDAS_KW): return "pandas_query"
+    if any(k in q for k in _PLOT_KW): return "plot_chart"
     return None
 
 def _keyword_route(q: str):
     q = q.lower()
-
-    if any(k in q for k in _SQL_KW):
-        return "sql"
-
-    if any(k in q for k in _COMPUTE_KW):
-        return "compute"
-
+    if any(k in q for k in _SQL_KW): return "sql"
+    if any(k in q for k in _COMPUTE_KW): return "compute"
     return "retrieval"
 
 def _llm_route(query: str, history: list):
     try:
         from langchain_openai import ChatOpenAI
-
         llm = ChatOpenAI(
             model=os.getenv("OPENAI_MODEL", "gpt-4o-mini"),
             temperature=0,
             max_tokens=80
         )
-
-        msgs = [{"role": "system", "content": _PLANNER_SYSTEM}]
-        msgs += history[-3:]
-        msgs.append({"role": "user", "content": query})
-
+        msgs = [{"role": "system", "content": _PLANNER_SYSTEM}] + history[-3:] + [{"role": "user", "content": query}]
         raw = llm.invoke(msgs).content
         parsed = _safe_json_load(raw)
-
         route = parsed.get("route")
         grade = parsed.get("grade")
-
         if route not in _ALLOWED_ROUTES:
             raise ValueError("Invalid route")
-
-        return {
-            "route": route,
-            "grade": grade,
-            "reason": "llm"
-        }
-
+        return {"route": route, "grade": grade, "reason": "llm"}
     except Exception as e:
         logger.warning(f"Planner fallback → {e}")
-
-        return {
-            "route": _keyword_route(query),
-            "grade": _detect_grade(query),
-            "reason": "fallback"
-        }
+        return {"route": _keyword_route(query), "grade": _detect_grade(query), "reason": "fallback"}
 
 # ==============================
 # 🔹 MAIN NODE (FINAL)
@@ -157,32 +124,15 @@ def planner_node(state: dict) -> dict:
         retry = state.get("retry_count", 0)
 
         if not query:
-            return {
-                **state,
-                "route": "direct",
-                "error": "Empty query"
-            }
+            return {**state, "route": "direct", "error": "Empty query"}
 
         # STEP 1 — Advanced routing (highest priority)
         route = _advanced_route(query)
+        decision = {"route": route, "grade": None, "reason": "advanced"} if route else _llm_route(query, history)
+        route = decision["route"]
 
-        if route:
-            decision = {
-                "route": route,
-                "grade": None,
-                "reason": "advanced"
-            }
-        else:
-            # STEP 2 — LLM / fallback
-            decision = _llm_route(query, history)
-            route = decision["route"]
-
-        # STEP 3 — Grade resolution
-        grade = (
-            decision.get("grade")
-            or _detect_grade(query)
-            or state.get("employee_grade")
-        )
+        # STEP 2 — Grade resolution
+        grade = decision.get("grade") or _detect_grade(query) or state.get("employee_grade")
 
         logger.info(f"[Planner] route={route} grade={grade}")
 
@@ -190,30 +140,13 @@ def planner_node(state: dict) -> dict:
             **state,
             "route": route,
             "employee_grade": grade,
-            "needs_compute": route in {
-                "sql", "compute", "numpy_compute"
-            },
+            "needs_compute": route in {"sql", "compute", "numpy_compute"},
             "retry_count": retry
         }, node="planner", data=decision)
 
     except Exception as e:
         logger.error(f"[Planner Crash] {e}")
-
-        # 🔥 HARD FAILSAFE (never break graph)
-        return {
-            **state,
-            "route": "retrieval",
-            "employee_grade": None,
-            "error": str(e)
-        }
-    except Exception as e:
-        logger.error(f"[Planner Crash] {e}")
-        return {
-            **state,
-            "route": "retrieval",
-            "employee_grade": None,
-            "error": str(e)
-        }
+        return {**state, "route": "retrieval", "employee_grade": None, "error": str(e)}
 
 # ✅ Export alias for workflow compatibility
 run = planner_node
