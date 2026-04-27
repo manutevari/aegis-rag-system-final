@@ -108,10 +108,10 @@ if prompt := st.chat_input("Ask about company policy..."):
 
     with st.chat_message("assistant"):
         response_placeholder = st.empty()
-        full_response = ""
         
         async def run_pipeline():
-            nonlocal full_response
+            # Use a list to hold the response so we can modify it
+            response_data = {"full_response": ""}
             embed_model = get_embed_model()
             
             # 1. Retrieval & Rerank (The "Context" stage)
@@ -125,10 +125,10 @@ if prompt := st.chat_input("Ask about company policy..."):
             
             # This is where the real streaming happens
             async for chunk in chat_model_instance.astream(prompt_template):
-                full_response += chunk.content
-                response_placeholder.markdown(full_response + "▌")
+                response_data["full_response"] += chunk.content
+                response_placeholder.markdown(response_data["full_response"] + "▌")
             
-            response_placeholder.markdown(full_response)
+            response_placeholder.markdown(response_data["full_response"])
             
             # 3. Citations UI
             st.markdown("---")
@@ -136,7 +136,7 @@ if prompt := st.chat_input("Ask about company policy..."):
             for src in sources:
                 st.markdown(f"- `{src}`")
             
-            return full_response, sources
+            return response_data["full_response"], sources
 
         # Run the async pipeline
         final_text, final_sources = asyncio.run(run_pipeline())
