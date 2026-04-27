@@ -1,85 +1,40 @@
 # app/graph/builder.py
+"""
+Minimal graph builder used by api.py.
+
+FIXES:
+1. Import was `from app.nodes.retriever import retriever_node` — file is
+   `retrieval.py` and function is `run`.  Corrected to retrieval.run.
+2. State schema changed to AgentState (TypedDict mismatch with AgentState
+   Pydantic model caused LangGraph type errors).
+3. Removed RunnableLambda wrapping — LangGraph ≥ 0.2 accepts plain callables.
+4. generator_node import path fixed (generator.py exposes `run`, not
+   `generator_node`).
+5. trace node import corrected (`run`, not `trace_node` function name).
+"""
 
 from langgraph.graph import StateGraph, END
-from langchain_core.runnables import RunnableLambda
-from typing import TypedDict, Dict, Any, Callable
+from app.state import AgentState
 
-# ✅ Correct imports (FUNCTIONS ONLY — NOT MODULES)
-from app.nodes.planner import planner_node
-from app.nodes.retriever import retriever_node
-from app.nodes.generator import generator_node
-from app.nodes.trace_node import trace_node
+from app.nodes.planner   import run as planner_node
+from app.nodes.retrieval import run as retriever_node   # FIX: was app.nodes.retriever
+from app.nodes.generator import run as generator_node   # FIX: was generator_node (non-existent)
+from app.nodes.trace_node import run as trace_node_fn   # FIX: was trace_node (non-existent)
 
-# ==============================
-# 🔹 STATE DEFINITION
-# ==============================
-
-class GraphState(TypedDict, total=False):
-    query: str
-    context: str
-    answer: str
-    trace: Dict[str, Any]
-    error: str
-
-
-# ==============================
-# 🔹 VALIDATION LAYER (CRITICAL)
-# ==============================
-
-def validate_node(name: str, node: Callable):
-    if node is None:
-        raise ValueError(f"Node '{name}' is None")
-
-    if not callable(node):
-        raise TypeError(
-            f"Node '{name}' must be callable, got {type(node)}"
-        )
-
-
-def wrap_node(node: Callable):
-    """Wrap node into RunnableLambda for LangGraph safety"""
-    return RunnableLambda(node)
-
-
-# ==============================
-# 🔹 SAFE NODE REGISTRATION
-# ==============================
-
-def get_nodes():
-    nodes = {
-        "planner": planner_node,
-        "retriever": retriever_node,
-        "generator": generator_node,
-        "trace": trace_node,
-    }
-
-    # ✅ Validate ALL nodes before graph build
-    for name, node in nodes.items():
-        validate_node(name, node)
-
-    # ✅ Wrap for safety
-    return {k: wrap_node(v) for k, v in nodes.items()}
-
-
-# ==============================
-# 🔹 GRAPH BUILDER
-# ==============================
 
 def build_graph():
-    nodes = get_nodes()
+    graph = StateGraph(AgentState)
 
-    graph = StateGraph(GraphState)
+    graph.add_node("planner",   planner_node)
+    graph.add_node("retriever", retriever_node)
+    graph.add_node("generator", generator_node)
+    graph.add_node("trace",     trace_node_fn)
 
-    # Add nodes
-    for name, node in nodes.items():
-        graph.add_node(name, node)
-
-    # Flow
     graph.set_entry_point("planner")
 
-    graph.add_edge("planner", "retriever")
+    graph.add_edge("planner",   "retriever")
     graph.add_edge("retriever", "generator")
     graph.add_edge("generator", "trace")
-    graph.add_edge("trace", END)
+    graph.add_edge("trace",     END)
 
     return graph.compile()
