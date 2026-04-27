@@ -1,3 +1,5 @@
+# ✅ Export alias for workflow compatibility
+run = planner_node
 """
 Planner Node — Production Hardened
 
