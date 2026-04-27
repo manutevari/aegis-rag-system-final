@@ -1,5 +1,6 @@
 import os
 import sys
+import time
 import streamlit as st
 from dotenv import load_dotenv
 
@@ -14,49 +15,34 @@ for path in [CURRENT_DIR, PARENT_DIR]:
         sys.path.insert(0, path)
 
 os.chdir(CURRENT_DIR)
-load_dotenv()
+load_dotenv(os.path.join(CURRENT_DIR, ".env"))
 
 # ==============================
-# 🔹 IMPORT YOUR SYSTEM
+# 🔹 IMPORTS
 # ==============================
 from app.graph.workflow import build_graph
-from app.core.stability_patch import safe_invoke   # ✅ CRITICAL
+from app.utils.pickle_cache import PickleCache
+from app.utils.encryption import encrypt, decrypt
+from app.memory.memory_manager import MemoryManager
+
+# ✅ PATCH IMPORT
+from app.core.stability_patch import safe_invoke
 
 # ==============================
-# 🔹 LOAD GRAPH (CACHED)
+# 🔹 APP CONFIG
+# ==============================
+st.set_page_config(
+    page_title="AEGIS Policy Intelligence",
+    page_icon="🏢",
+    layout="wide"
+)
+
+# ==============================
+# 🔹 LOAD GRAPH
 # ==============================
 @st.cache_resource
 def load_graph():
     return build_graph()
-
-# ==============================
-# 🔹 DEFINE APP (🔥 YOUR MISSING PIECE)
-# ==============================
-def app(query: str):
-    graph = load_graph()
-
-    result = safe_invoke(graph, {
-        "query": query,
-        "memory_context": [],
-        "history": [],
-        "trace_log": []
-    })
-
-    return result
-
-# ==============================
-# 🔹 UI CONFIG
-# ==============================
-st.set_page_config(page_title="Aegis RAG System", page_icon="🛡️", layout="centered")
-
-st.markdown("""
-    <style>
-    .stApp { max-width: 800px; margin: 0 auto; }
-    .main-header { font-size: 2.5rem; color: #2E4053; text-align: center; }
-    </style>
-""", unsafe_allow_html=True)
-
-st.markdown("<h1 class='main-header'>🛡️ Aegis RAG System</h1>", unsafe_allow_html=True)
 
 # ==============================
 # 🔹 SESSION STATE
@@ -64,37 +50,121 @@ st.markdown("<h1 class='main-header'>🛡️ Aegis RAG System</h1>", unsafe_allo
 if "messages" not in st.session_state:
     st.session_state.messages = []
 
+if "cache" not in st.session_state:
+    st.session_state.cache = PickleCache()
+
+if "memory" not in st.session_state:
+    st.session_state.memory = MemoryManager()
+
+if "traces" not in st.session_state:
+    st.session_state.traces = []
+
 # ==============================
-# 🔹 DISPLAY CHAT
+# 🔹 SIDEBAR
 # ==============================
+with st.sidebar:
+    st.title("⚙️ Control Panel")
+
+    use_cache = st.toggle("Enable Cache", True)
+    debug_mode = st.toggle("Debug Mode", True)
+    grade_override = st.text_input("Employee Grade Override")
+
+    if st.button("🗑️ Clear Cache"):
+        st.session_state.cache.clear()
+        st.rerun()
+
+# ==============================
+# 🔹 MAIN UI
+# ==============================
+st.title("💬 Policy Assistant")
+
+# Chat history
 for msg in st.session_state.messages:
     with st.chat_message(msg["role"]):
         st.markdown(msg["content"])
 
 # ==============================
-# 🔹 CHAT INPUT
+# 🔹 NEW STABLE CHAT ENTRYPOINT
 # ==============================
-if query := st.chat_input("Ask Aegis anything..."):
+query = st.chat_input("Ask anything")
 
-    # User message
+if query:
+    # Save user message
     st.session_state.messages.append({"role": "user", "content": query})
+
     with st.chat_message("user"):
         st.markdown(query)
 
-    # Assistant response
     with st.chat_message("assistant"):
-        try:
-            with st.spinner("Analyzing..."):
+        with st.spinner("Thinking..."):
 
-                response = app(query)
-                answer = response.get("answer", "No answer generated.")
+            try:
+                # ==============================
+                # 🔹 CACHE CHECK
+                # ==============================
+                cached = st.session_state.cache.get(query) if use_cache else None
 
-            st.markdown(answer)
+                if cached:
+                    result = {
+                        "answer": decrypt(cached),
+                        "route": "cache_hit",
+                        "trace_log": []
+                    }
 
-            st.session_state.messages.append({
-                "role": "assistant",
-                "content": answer
-            })
+                else:
+                    graph = load_graph()
 
-        except Exception as e:
-            st.error(f"System Error: {str(e)}")
+                    # ✅ SAFE INVOKE (CORE FIX)
+                    result = safe_invoke(graph, {
+                        "query": query,
+                        "memory_context": st.session_state.memory.get_context(),
+                        "history": st.session_state.messages[-6:],
+                        "trace_log": [],
+                        "employee_grade": grade_override.upper() if grade_override else None
+                    })
+
+                    if use_cache and result.get("answer"):
+                        st.session_state.cache.set(query, encrypt(result["answer"]))
+
+                # ==============================
+                # 🔹 STREAM OUTPUT
+                # ==============================
+                answer = result.get("answer", "No response")
+                full = ""
+
+                placeholder = st.empty()
+
+                for word in answer.split():
+                    full += word + " "
+                    placeholder.markdown(full + "▌")
+                    time.sleep(0.02)
+
+                placeholder.markdown(full)
+
+                # Save response
+                st.session_state.messages.append({
+                    "role": "assistant",
+                    "content": full
+                })
+
+                st.session_state.traces.append(result)
+
+            except Exception as e:
+                st.error(f"System Error: {str(e)}")
+
+# ==============================
+# 🔹 DEBUG PANEL
+# ==============================
+if debug_mode and st.session_state.traces:
+    st.divider()
+    st.subheader("🔍 Debug Trace")
+
+    latest = st.session_state.traces[-1]
+
+    st.json({
+        "route": latest.get("route"),
+        "trace_log": latest.get("trace_log")
+    })
+
+    st.subheader("🧠 Memory")
+    st.json(st.session_state.memory.get_context())
