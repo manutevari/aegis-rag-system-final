@@ -130,7 +130,7 @@ def build_graph():
     )
 
     graph.add_edge("summarizer", "generator")
-    graph.add_edge("generator",  "confidence")  # FIX: confidence was never called
+    graph.add_edge("generator",  "confidence")
     graph.add_edge("confidence", "verifier")
 
     graph.add_conditional_edges(
@@ -156,7 +156,7 @@ def build_graph():
         graph.add_conditional_edges(
             node,
             guard_halt,
-            {"halt": "trace_end", "continue": None},
+            {"halt": "trace_end", "continue": END},
         )
 
     # ── Exit ──────────────────────────────────────────────────────────────────
