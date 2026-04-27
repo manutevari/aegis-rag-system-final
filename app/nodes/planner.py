@@ -1,5 +1,3 @@
-# ✅ Export alias for workflow compatibility
-run = planner_node
 """
 Planner Node — Production Hardened
 
@@ -208,3 +206,14 @@ def planner_node(state: dict) -> dict:
             "employee_grade": None,
             "error": str(e)
         }
+    except Exception as e:
+        logger.error(f"[Planner Crash] {e}")
+        return {
+            **state,
+            "route": "retrieval",
+            "employee_grade": None,
+            "error": str(e)
+        }
+
+# ✅ Export alias for workflow compatibility
+run = planner_node
