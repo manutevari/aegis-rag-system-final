@@ -120,7 +120,7 @@ if query:
                         "memory_context": st.session_state.memory.get_context(),
                         "history": st.session_state.messages[-6:],
                         "trace_log": [],
-                        "employee_grade": grade_override.upper() if grade_override else None
+                        "employee_grade": grade_override.strip().upper() if grade_override and grade_override.strip() else "L3"
                     })
 
                     if use_cache and result.get("answer"):
@@ -167,4 +167,4 @@ if debug_mode and st.session_state.traces:
     })
 
     st.subheader("🧠 Memory")
-    st.json(st.session_state.memory.get_context())
+    st.text(st.session_state.memory.get_context())
