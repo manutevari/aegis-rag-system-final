@@ -11,7 +11,7 @@ jobs:
   tests:
     runs-on: ubuntu-latest
     env:
-      OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY || 'test-key' }}
+      RAG_EMBEDDINGS_PROVIDER: hash
       ENCRYPTION_KEY_PATH: /tmp/dg_rag_test.key
     steps:
       - name: Check out repository
