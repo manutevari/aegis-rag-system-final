@@ -1,70 +1,158 @@
 """
-Vector Store Factory
+Shared vector store factory for ingestion and retrieval.
 
-Supports FAISS (default, local) and Chroma (persistent)
+All policy indexing and query-time retrieval should use this module so the
+persist directory, collection name, and embedding model stay aligned.
 """
 
-import os
 import logging
-from typing import Optional, List
+import os
+from pathlib import Path
+from typing import Any, Iterable, List, Optional
 
 logger = logging.getLogger(__name__)
 
-_vector_store = None
+DEFAULT_DB_PATH = "db"
+DEFAULT_COLLECTION_NAME = "aegis_policies"
+
+_vectorstore = None
 
 
-def get_embed_model_instance():
-    """Get embedding model instance."""
+def get_db_path() -> str:
+    return os.getenv("CHROMA_DIR") or os.getenv("VECTOR_DB_PATH") or DEFAULT_DB_PATH
+
+
+def get_collection_name() -> str:
+    return os.getenv("CHROMA_COLLECTION", DEFAULT_COLLECTION_NAME)
+
+
+def get_embedding_function():
     from langchain_openai import OpenAIEmbeddings
+
     from app.core.models import get_embed_model
-    
+
     return OpenAIEmbeddings(
         model=get_embed_model(),
-        api_key=os.getenv("OPENAI_API_KEY")
+        api_key=os.getenv("OPENAI_API_KEY"),
     )
 
 
+def get_vectorstore():
+    """Return the singleton persistent Chroma store."""
+    global _vectorstore
+
+    if _vectorstore is not None:
+        return _vectorstore
+
+    from langchain_chroma import Chroma
+
+    db_path = get_db_path()
+    Path(db_path).mkdir(parents=True, exist_ok=True)
+
+    _vectorstore = Chroma(
+        collection_name=get_collection_name(),
+        persist_directory=db_path,
+        embedding_function=get_embedding_function(),
+    )
+    logger.info(
+        "Vector store ready: Chroma path=%s collection=%s count=%s",
+        db_path,
+        get_collection_name(),
+        get_collection_count(_vectorstore),
+    )
+    return _vectorstore
+
+
 def get_vector_store():
-    """
-    Get or initialize vector store singleton.
-    
-    Returns:
-        Vector store instance (FAISS or Chroma)
-    """
-    global _vector_store
-    
-    if _vector_store is not None:
-        return _vector_store
-    
-    vector_store_type = os.getenv("VECTOR_STORE", "faiss")
-    
-    # Dummy documents for initialization
-    from langchain_core.documents import Document
-    dummy_docs = [Document(page_content="Sample policy document")]
-    
-    emb = get_embed_model_instance()
-    
+    """Backward-compatible alias for older imports."""
+    return get_vectorstore()
+
+
+def reset_vectorstore_cache() -> None:
+    global _vectorstore
+    _vectorstore = None
+
+
+def persist_vectorstore(store: Optional[Any] = None) -> None:
+    store = store or get_vectorstore()
+    persist = getattr(store, "persist", None)
+    if callable(persist):
+        persist()
+
+
+def get_collection_count(store: Optional[Any] = None) -> int:
     try:
-        if vector_store_type == "chroma":
-            from langchain_chroma import Chroma
-            chroma_dir = os.getenv("CHROMA_DIR", "/tmp/dg_rag_chroma")
-            _vector_store = Chroma.from_documents(
-                dummy_docs,
-                emb,
-                persist_directory=chroma_dir,
-                collection_name="dg_rag"
-            )
-            logger.info(f"Vector store initialized: Chroma ({chroma_dir})")
-        else:
-            from langchain_community.vectorstores import FAISS
-            _vector_store = FAISS.from_documents(dummy_docs, emb)
-            logger.info("Vector store initialized: FAISS (local)")
-    except Exception as e:
-        logger.error(f"Failed to initialize vector store: {e}")
-        raise
-    
-    return _vector_store
+        store = store or _vectorstore or get_vectorstore()
+        collection = getattr(store, "_collection", None)
+        if collection is not None and hasattr(collection, "count"):
+            return int(collection.count())
+    except Exception as exc:
+        logger.debug("Could not read Chroma collection count: %s", exc)
+    return 0
 
 
-# Convenience alias for backwards compatibility
-vector_db = get_vector_store()
+def has_persisted_index() -> bool:
+    return Path(get_db_path(), "chroma.sqlite3").exists()
+
+
+def index_documents(documents: Iterable[Any]) -> dict:
+    docs = list(documents or [])
+    if not docs:
+        return {"chunks_indexed": 0, "collection_count": get_collection_count()}
+
+    store = get_vectorstore()
+    store.add_documents(docs)
+    persist_vectorstore(store)
+
+    return {
+        "chunks_indexed": len(docs),
+        "collection_count": get_collection_count(store),
+        "db_path": get_db_path(),
+        "collection": get_collection_name(),
+    }
+
+
+def get_retriever(k: int = 5):
+    return get_vectorstore().as_retriever(search_kwargs={"k": k})
+
+
+def search_documents(query: str, k: int = 5) -> List[Any]:
+    if not query:
+        return []
+
+    retriever = get_retriever(k=k)
+    if hasattr(retriever, "invoke"):
+        return list(retriever.invoke(query) or [])
+    if hasattr(retriever, "get_relevant_documents"):
+        return list(retriever.get_relevant_documents(query) or [])
+    return []
+
+
+def ensure_vectorstore_ready(auto_ingest: bool = True) -> int:
+    count = get_collection_count(get_vectorstore())
+    if count or not auto_ingest:
+        return count
+
+    from policy_ingestion import run_ingestion
+
+    logger.info("Vector store is empty; running policy ingestion")
+    result = run_ingestion()
+    return int(result.get("collection_count") or result.get("chunks_indexed") or 0)
+
+
+class _LazyVectorStoreProxy:
+    """Compatibility proxy for legacy code that imported vector_db directly."""
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(get_vectorstore(), name)
+
+    def search(self, query: Any, top_k: int = 5, **kwargs: Any) -> List[Any]:
+        store = get_vectorstore()
+        if isinstance(query, str):
+            return store.similarity_search(query, k=top_k, **kwargs)
+        if hasattr(store, "similarity_search_by_vector"):
+            return store.similarity_search_by_vector(query, k=top_k, **kwargs)
+        return []
+
+
+vector_db = _LazyVectorStoreProxy()
