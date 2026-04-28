@@ -1,13 +1,7 @@
-"""
-Hybrid intent router.
-
-The router accepts either plain dict state or AgentState objects. On ambiguity or
-classifier failure it falls back to RAG instead of crashing the graph.
-"""
+"""Rule-based intent router for offline-first execution."""
 
 import logging
 
-from app.core.models import get_llm
 from app.core.stability_patch import safe_get, with_updates
 
 logger = logging.getLogger(__name__)
@@ -16,48 +10,39 @@ VALID_LABELS = {"chat", "rag", "compute", "unclear"}
 
 
 def _rule_based_intent(query: str) -> str:
-    q = query.lower()
+    lower = query.lower()
 
-    if any(x in q for x in ["hi", "hello", "how are you", "who are you"]):
+    if any(word in lower for word in ["hi", "hello", "how are you", "who are you"]):
         return "chat"
 
-    if any(x in q for x in ["calculate", "total", "cost", "percent", "percentage"]):
+    if any(word in lower for word in ["calculate", "total", "cost", "percent", "percentage"]):
         return "compute"
 
-    if any(x in q for x in ["policy", "allowance", "rule", "eligibility", "reimbursement"]):
+    if any(
+        word in lower
+        for word in [
+            "policy",
+            "allowance",
+            "rule",
+            "eligibility",
+            "reimbursement",
+            "fuel",
+            "travel",
+            "leave",
+            "security",
+        ]
+    ):
         return "rag"
 
     return "unclear"
 
 
 def _llm_intent(query: str) -> str:
-    try:
-        llm = get_llm(model_override="gpt-4o-mini", temperature=0)
-        prompt = f"""
-You are a strict classifier.
-
-Return ONLY one word from:
-chat, rag, compute, unclear
-
-Query: {query}
-"""
-        res = llm.invoke(prompt)
-        out = getattr(res, "content", "").strip().lower()
-    except Exception as exc:
-        logger.warning("Router LLM fallback failed: %s", exc)
-        return "unclear"
-
-    if out not in VALID_LABELS:
-        return "unclear"
-
-    return out
+    return "unclear"
 
 
 def classify_intent(query: str) -> str:
-    rule_intent = _rule_based_intent(query)
-    if rule_intent != "unclear":
-        return rule_intent
-    return _llm_intent(query)
+    return _rule_based_intent(query)
 
 
 def run(state):
