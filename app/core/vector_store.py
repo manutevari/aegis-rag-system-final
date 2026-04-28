@@ -5,17 +5,62 @@ All policy indexing and query-time retrieval should use this module so the
 persist directory, collection name, and embedding model stay aligned.
 """
 
+import hashlib
 import logging
+import math
 import os
+import re
 from pathlib import Path
 from typing import Any, Iterable, List, Optional
+
+from langchain_core.embeddings import Embeddings
 
 logger = logging.getLogger(__name__)
 
 DEFAULT_DB_PATH = "db"
 DEFAULT_COLLECTION_NAME = "aegis_policies"
+DEFAULT_LOCAL_EMBED_MODEL = "sentence-transformers/all-MiniLM-L6-v2"
+DEFAULT_HASH_DIMENSIONS = 384
 
 _vectorstore = None
+
+
+def _truthy_env(name: str, default: bool = False) -> bool:
+    raw = os.getenv(name)
+    if raw is None:
+        return default
+    return raw.strip().lower() in {"1", "true", "yes", "on"}
+
+
+class LocalHashEmbeddings(Embeddings):
+    """Deterministic local embedding fallback with no network dependency.
+
+    This is intentionally simple: it lets ingestion and retrieval keep working
+    in fully offline environments when neither OpenAI nor a cached local
+    sentence-transformer is available.
+    """
+
+    def __init__(self, dimension: Optional[int] = None):
+        self.dimension = dimension or int(os.getenv("LOCAL_HASH_EMBED_DIM", DEFAULT_HASH_DIMENSIONS))
+
+    def _embed(self, text: str) -> List[float]:
+        vector = [0.0] * self.dimension
+        tokens = re.findall(r"[a-z0-9]+", (text or "").lower()) or [""]
+
+        for token in tokens:
+            digest = hashlib.blake2b(token.encode("utf-8"), digest_size=8).digest()
+            bucket = int.from_bytes(digest[:4], "big") % self.dimension
+            sign = 1.0 if digest[4] % 2 == 0 else -1.0
+            vector[bucket] += sign
+
+        norm = math.sqrt(sum(value * value for value in vector)) or 1.0
+        return [value / norm for value in vector]
+
+    def embed_documents(self, texts: List[str]) -> List[List[float]]:
+        return [self._embed(text) for text in texts]
+
+    def embed_query(self, text: str) -> List[float]:
+        return self._embed(text)
 
 
 def get_db_path() -> str:
@@ -26,7 +71,7 @@ def get_collection_name() -> str:
     return os.getenv("CHROMA_COLLECTION", DEFAULT_COLLECTION_NAME)
 
 
-def get_embedding_function():
+def _openai_embeddings():
     from langchain_openai import OpenAIEmbeddings
 
     from app.core.models import get_embed_model
@@ -35,6 +80,73 @@ def get_embedding_function():
         model=get_embed_model(),
         api_key=os.getenv("OPENAI_API_KEY"),
     )
+
+
+def _huggingface_embeddings():
+    if not _truthy_env("ALLOW_HF_DOWNLOADS", False):
+        os.environ.setdefault("HF_HUB_OFFLINE", "1")
+
+    from langchain_community.embeddings import HuggingFaceEmbeddings
+
+    model_name = os.getenv("LOCAL_EMBED_MODEL", DEFAULT_LOCAL_EMBED_MODEL)
+    model_kwargs = {}
+    if not _truthy_env("ALLOW_HF_DOWNLOADS", False):
+        model_kwargs["local_files_only"] = True
+
+    return HuggingFaceEmbeddings(
+        model_name=model_name,
+        model_kwargs=model_kwargs,
+    )
+
+
+def _local_embeddings() -> Embeddings:
+    try:
+        embeddings = _huggingface_embeddings()
+        logger.info("Using local Hugging Face embeddings")
+        return embeddings
+    except Exception as exc:
+        logger.warning("Local Hugging Face embeddings unavailable; using hash embeddings: %s", exc)
+        return LocalHashEmbeddings()
+
+
+def get_embeddings() -> Embeddings:
+    """Return embeddings with an offline-capable fallback chain.
+
+    Selection rules:
+    - RAG_EMBEDDINGS_PROVIDER=openai uses OpenAI embeddings.
+    - RAG_EMBEDDINGS_PROVIDER=huggingface/local uses cached local HF embeddings,
+      then hash fallback if unavailable.
+    - RAG_EMBEDDINGS_PROVIDER=hash uses the built-in offline hash embeddings.
+    - auto uses OpenAI when OPENAI_API_KEY exists unless RAG_OFFLINE_FIRST=true;
+      otherwise it uses local embeddings and falls back to hash embeddings.
+    """
+
+    provider = os.getenv("RAG_EMBEDDINGS_PROVIDER") or os.getenv("EMBEDDINGS_PROVIDER", "auto")
+    provider = provider.strip().lower()
+
+    if provider == "hash":
+        logger.info("Using deterministic local hash embeddings")
+        return LocalHashEmbeddings()
+
+    if provider in {"huggingface", "local", "sentence-transformers"}:
+        return _local_embeddings()
+
+    if provider == "openai":
+        return _openai_embeddings()
+
+    if os.getenv("OPENAI_API_KEY") and not _truthy_env("RAG_OFFLINE_FIRST", False):
+        try:
+            logger.info("Using OpenAI embeddings")
+            return _openai_embeddings()
+        except Exception as exc:
+            logger.warning("OpenAI embeddings unavailable; using local fallback: %s", exc)
+
+    return _local_embeddings()
+
+
+def get_embedding_function() -> Embeddings:
+    """Backward-compatible alias."""
+    return get_embeddings()
 
 
 def get_vectorstore():
@@ -52,7 +164,7 @@ def get_vectorstore():
     _vectorstore = Chroma(
         collection_name=get_collection_name(),
         persist_directory=db_path,
-        embedding_function=get_embedding_function(),
+        embedding_function=get_embeddings(),
     )
     logger.info(
         "Vector store ready: Chroma path=%s collection=%s count=%s",
