@@ -29,10 +29,24 @@ st.set_page_config(
 )
 
 
+@st.cache_resource(show_spinner=False)
+def ensure_policy_index():
+    from app.core.vector_store import ensure_vectorstore_ready
+
+    return ensure_vectorstore_ready(auto_ingest=True)
+
+
 @st.cache_resource
 def load_graph():
     return build_graph()
 
+
+index_error = None
+try:
+    indexed_chunks = ensure_policy_index()
+except Exception as exc:
+    indexed_chunks = 0
+    index_error = str(exc)
 
 if "messages" not in st.session_state:
     st.session_state.messages = []
@@ -48,6 +62,10 @@ with st.sidebar:
     st.markdown("---")
     use_cache = st.toggle("Enable Secure Cache", True)
     debug_mode = st.toggle("Show System Trace", True)
+
+    st.caption(f"Policy chunks indexed: {indexed_chunks}")
+    if index_error:
+        st.warning(f"Policy index not ready: {index_error}")
 
     grade_override = st.selectbox(
         "Access Level (Grade)",
