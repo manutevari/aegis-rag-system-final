@@ -3,6 +3,7 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 
+import app.nodes.router as router
 from app.core.stability_patch import safe_get, safe_set
 from app.nodes.router import run as route
 from app.state import AgentState
@@ -33,7 +34,7 @@ def test_safe_access_helpers_work_for_dict_and_agent_state():
     assert model.intent == "rag"
 
 
-def test_router_accepts_agent_state_and_falls_back_to_rag():
+def test_router_accepts_agent_state_and_routes_policy_query():
     state = AgentState(query="Tell me about allowance eligibility", trace_log=[])
     routed = route(state)
 
@@ -41,9 +42,11 @@ def test_router_accepts_agent_state_and_falls_back_to_rag():
     assert routed["route"] == "retrieval"
 
 
-def test_router_handles_unclear_agent_state_without_crashing():
+def test_router_handles_unclear_agent_state_without_crashing(monkeypatch):
+    monkeypatch.setattr(router, "_llm_intent", lambda query: "unclear")
+
     state = AgentState(query="blue notebook", trace_log=[])
-    routed = route(state)
+    routed = router.run(state)
 
     assert routed["intent"] == "rag"
     assert routed["route"] == "retrieval"
