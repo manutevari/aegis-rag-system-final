@@ -1,15 +1,15 @@
-import os
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 SKIP_DIRS = {".git", "__pycache__", ".pytest_cache", "db", ".streamlit", ".venv", "venv"}
+REMOTE_TOKEN = "op" + "en" + "ai"
 FORBIDDEN = [
     "Open" + "AI",
     "Chat" + "Open" + "AI",
     "OPEN" + "AI_API_KEY",
-    "langchain_" + "openai",
-    "langchain-" + "openai",
-    "open" + "ai",
+    "langchain_" + REMOTE_TOKEN,
+    "langchain-" + REMOTE_TOKEN,
+    REMOTE_TOKEN,
 ]
 
 
