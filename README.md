@@ -7,7 +7,7 @@ A production-grade, context-aware RAG chatbot for navigating complex, interconne
 ```bash
 python -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
-cp .env.example .env   # set OPENAI_API_KEY
+cp .env.example .env   # set OPENAI_API_KEY when you want OpenAI embeddings/LLM
 
 # Optional: build the shared Chroma policy index manually
 python policy_ingestion.py
@@ -17,6 +17,21 @@ streamlit run streamlit_app.py
 
 # REST API -> http://localhost:8000/docs
 uvicorn api:app --reload --host 0.0.0.0 --port 8000
+```
+
+## Offline Embeddings
+
+The vector layer is offline-capable. With `OPENAI_API_KEY`, it uses OpenAI embeddings by default. Without a key, it tries cached local Hugging Face embeddings and falls back to deterministic local hash embeddings, so ingestion and retrieval can still run without internet.
+
+```bash
+# Guaranteed no-download local mode
+RAG_EMBEDDINGS_PROVIDER=hash python policy_ingestion.py
+
+# Prefer cached local Hugging Face embeddings, then fallback to hash
+RAG_EMBEDDINGS_PROVIDER=local python policy_ingestion.py
+
+# Prefer local mode even if OPENAI_API_KEY is present
+RAG_OFFLINE_FIRST=true streamlit run streamlit_app.py
 ```
 
 ## Architecture
