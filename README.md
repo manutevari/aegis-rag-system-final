@@ -1,6 +1,6 @@
-# 🏢 Decision-Grade Corporate Policy RAG Chatbot
+# Decision-Grade Corporate Policy RAG Chatbot
 
-A production-grade, context-aware RAG chatbot for navigating complex, interconnected, and highly numerical corporate policy — built on **LangGraph**, **LangChain**, **FAISS/Chroma**, and **Streamlit**.
+A production-grade, context-aware RAG chatbot for navigating complex, interconnected, and highly numerical corporate policy, built on LangGraph, LangChain, FAISS/Chroma, FastAPI, and Streamlit.
 
 ## Quick Start
 
@@ -8,43 +8,48 @@ A production-grade, context-aware RAG chatbot for navigating complex, interconne
 python -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
 cp .env.example .env   # set OPENAI_API_KEY
-python main.py --mode ui     # Streamlit UI → http://localhost:8501
-python main.py --mode api    # REST API    → http://localhost:8000/docs
-python main.py --mode cli    # Terminal
+
+# Streamlit UI -> http://localhost:8501
+streamlit run streamlit_app.py
+
+# REST API -> http://localhost:8000/docs
+uvicorn api:app --reload --host 0.0.0.0 --port 8000
 ```
 
 ## Architecture
 
-```
-Query → Planner (grade-aware routing)
-  ├── sql → compute → context_assembler
-  ├── retrieval ───→ context_assembler
-  └── direct ──────→ context_assembler
-                         ↓
+```text
+Query -> Planner (grade-aware routing)
+  |-- sql -> compute -> context_assembler
+  |-- retrieval ------> context_assembler
+  `-- direct ---------> context_assembler
+                         |
                    token_check (summarise if >3k tokens)
-                         ↓
+                         |
                      generate (strict grounded LLM)
-                         ↓
+                         |
                       verify (4 blocking checks)
-                    valid ↓       ↑ retry
-                       hitl ──────┘
-                         ↓ approve/edit
-                   encrypt → decrypt → trace → END
+                    valid |       retry
+                         v         ^ 
+                       hitl -------'
+                         |
+                   encrypt -> decrypt -> trace -> END
 ```
 
 ## Key Files
 
 | File | Purpose |
 |------|---------|
-| `app/graph/workflow.py` | Full 14-node LangGraph |
+| `streamlit_app.py` | Primary Streamlit chat UI and execution trace viewer |
+| `main.py` | Alternate Streamlit upload/rerank prototype |
+| `api.py` | FastAPI REST API |
+| `app/graph/workflow.py` | Full LangGraph workflow |
 | `app/nodes/planner.py` | LLM + keyword grade-aware router |
-| `app/nodes/verifier.py` | 4-check blocking quality gate |
-| `app/tools/compute.py` | Pure Python arithmetic (zero LLM) |
+| `app/nodes/verifier.py` | Blocking quality gate |
+| `app/tools/compute.py` | Pure Python arithmetic helpers |
 | `app/tools/sql.py` | SQLite/PostgreSQL policy database |
 | `app/tools/retriever.py` | FAISS/Chroma vector search |
-| `app/ui/streamlit_app.py` | Chat UI + execution trace viewer |
-| `app/api.py` | FastAPI REST API |
-| `tests/test_all.py` | 20+ unit tests |
+| `tests/test_all.py` | Unit tests |
 
 ## Run Tests
 
