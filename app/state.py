@@ -2,11 +2,11 @@
 Agent state schema for the LangGraph pipeline.
 
 The graph may hand nodes either a plain dict or this Pydantic model depending on
-where execution enters. AgentState therefore exposes a small mapping-compatible
+where execution enters. AgentState therefore exposes a mapping-compatible
 surface while keeping structured defaults for production runs.
 """
 
-from typing import Any, Dict, List, Optional, Union
+from typing import Any, Dict, Iterator, List, Optional, Union
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -78,6 +78,21 @@ class AgentState(BaseModel):
 
     def __contains__(self, key: object) -> bool:
         return isinstance(key, str) and hasattr(self, key)
+
+    def __iter__(self) -> Iterator[str]:
+        return iter(self.to_dict())
+
+    def __len__(self) -> int:
+        return len(self.to_dict())
+
+    def keys(self):
+        return self.to_dict().keys()
+
+    def items(self):
+        return self.to_dict().items()
+
+    def values(self):
+        return self.to_dict().values()
 
     def update(self, values: Optional[Dict[str, Any]] = None, **kwargs: Any) -> "AgentState":
         for key, value in {**(values or {}), **kwargs}.items():
