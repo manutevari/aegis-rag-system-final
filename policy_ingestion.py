@@ -10,9 +10,9 @@ import os
 from pathlib import Path
 from typing import Any, Iterable, List, Optional
 
-from langchain.text_splitter import RecursiveCharacterTextSplitter
 from langchain_core.documents import Document
 from langchain_community.document_loaders import PyPDFLoader, TextLoader
+from langchain_text_splitters import RecursiveCharacterTextSplitter
 
 from app.core.vector_store import get_vectorstore, index_documents
 
