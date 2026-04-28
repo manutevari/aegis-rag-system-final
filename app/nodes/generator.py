@@ -59,11 +59,7 @@ def safe_invoke_llm(messages, model_override=None):
     try:
         return invoke_llm(messages, model_override=model_override)
     except Exception as exc:
-        err = str(exc)
-        if "429" in err or "quota" in err.lower():
-            logger.warning("[LLM] Rate limited")
-        else:
-            logger.error("[LLM] Error: %s", err)
+        logger.error("[Local LLM] Error: %s", exc)
         raise
 
 
@@ -134,7 +130,7 @@ def run(state: AgentState) -> AgentState:
 
     except Exception as exc:
         logger.error("Generation error: %s", exc)
-        answer = "System busy or rate-limited. Please try again."
+        answer = "Local generation failed. Please check the local model runtime and try again."
 
     sources = re.findall(r"(?:Source|source|CODE|Code):\s*\*?\*?([^\n*]+)\*?\*?", answer)
     sources = [source.strip() for source in sources if source.strip()]
