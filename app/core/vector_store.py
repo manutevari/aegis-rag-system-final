@@ -1,8 +1,8 @@
 """
 Shared vector store factory for ingestion and retrieval.
 
-All policy indexing and query-time retrieval should use this module so the
-persist directory, collection name, and embedding model stay aligned.
+All policy indexing and query-time retrieval use this module so the persist
+directory, collection name, and embedding model stay aligned.
 """
 
 import hashlib
@@ -33,12 +33,7 @@ def _truthy_env(name: str, default: bool = False) -> bool:
 
 
 class LocalHashEmbeddings(Embeddings):
-    """Deterministic local embedding fallback with no network dependency.
-
-    This is intentionally simple: it lets ingestion and retrieval keep working
-    in fully offline environments when neither OpenAI nor a cached local
-    sentence-transformer is available.
-    """
+    """Deterministic local embedding fallback with no network dependency."""
 
     def __init__(self, dimension: Optional[int] = None):
         self.dimension = dimension or int(os.getenv("LOCAL_HASH_EMBED_DIM", DEFAULT_HASH_DIMENSIONS))
@@ -71,17 +66,6 @@ def get_collection_name() -> str:
     return os.getenv("CHROMA_COLLECTION", DEFAULT_COLLECTION_NAME)
 
 
-def _openai_embeddings():
-    from langchain_openai import OpenAIEmbeddings
-
-    from app.core.models import get_embed_model
-
-    return OpenAIEmbeddings(
-        model=get_embed_model(),
-        api_key=os.getenv("OPENAI_API_KEY"),
-    )
-
-
 def _huggingface_embeddings():
     if not _truthy_env("ALLOW_HF_DOWNLOADS", False):
         os.environ.setdefault("HF_HUB_OFFLINE", "1")
@@ -99,7 +83,13 @@ def _huggingface_embeddings():
     )
 
 
-def _local_embeddings() -> Embeddings:
+def get_embeddings() -> Embeddings:
+    provider = os.getenv("RAG_EMBEDDINGS_PROVIDER", "local").strip().lower()
+
+    if provider == "hash":
+        logger.info("Using deterministic local hash embeddings")
+        return LocalHashEmbeddings()
+
     try:
         embeddings = _huggingface_embeddings()
         logger.info("Using local Hugging Face embeddings")
@@ -109,43 +99,7 @@ def _local_embeddings() -> Embeddings:
         return LocalHashEmbeddings()
 
 
-def get_embeddings() -> Embeddings:
-    """Return embeddings with an offline-capable fallback chain.
-
-    Selection rules:
-    - RAG_EMBEDDINGS_PROVIDER=openai uses OpenAI embeddings.
-    - RAG_EMBEDDINGS_PROVIDER=huggingface/local uses cached local HF embeddings,
-      then hash fallback if unavailable.
-    - RAG_EMBEDDINGS_PROVIDER=hash uses the built-in offline hash embeddings.
-    - auto uses OpenAI when OPENAI_API_KEY exists unless RAG_OFFLINE_FIRST=true;
-      otherwise it uses local embeddings and falls back to hash embeddings.
-    """
-
-    provider = os.getenv("RAG_EMBEDDINGS_PROVIDER") or os.getenv("EMBEDDINGS_PROVIDER", "auto")
-    provider = provider.strip().lower()
-
-    if provider == "hash":
-        logger.info("Using deterministic local hash embeddings")
-        return LocalHashEmbeddings()
-
-    if provider in {"huggingface", "local", "sentence-transformers"}:
-        return _local_embeddings()
-
-    if provider == "openai":
-        return _openai_embeddings()
-
-    if os.getenv("OPENAI_API_KEY") and not _truthy_env("RAG_OFFLINE_FIRST", False):
-        try:
-            logger.info("Using OpenAI embeddings")
-            return _openai_embeddings()
-        except Exception as exc:
-            logger.warning("OpenAI embeddings unavailable; using local fallback: %s", exc)
-
-    return _local_embeddings()
-
-
 def get_embedding_function() -> Embeddings:
-    """Backward-compatible alias."""
     return get_embeddings()
 
 
