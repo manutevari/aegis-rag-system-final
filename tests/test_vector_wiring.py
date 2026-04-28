@@ -8,6 +8,43 @@ from langchain_core.documents import Document
 from app.state import AgentState
 
 
+def test_hash_embeddings_are_deterministic_without_network():
+    from app.core.vector_store import LocalHashEmbeddings
+
+    embeddings = LocalHashEmbeddings(dimension=32)
+    first = embeddings.embed_query("fuel reimbursement policy")
+    second = embeddings.embed_query("fuel reimbursement policy")
+
+    assert first == second
+    assert len(first) == 32
+    assert any(value != 0 for value in first)
+
+
+def test_get_embeddings_can_force_hash_provider(monkeypatch):
+    import app.core.vector_store as vector_store
+
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.setenv("RAG_EMBEDDINGS_PROVIDER", "hash")
+
+    embeddings = vector_store.get_embeddings()
+
+    assert isinstance(embeddings, vector_store.LocalHashEmbeddings)
+
+
+def test_local_embeddings_fall_back_to_hash_when_model_unavailable(monkeypatch):
+    import app.core.vector_store as vector_store
+
+    monkeypatch.setattr(
+        vector_store,
+        "_huggingface_embeddings",
+        lambda: (_ for _ in ()).throw(RuntimeError("model not cached")),
+    )
+
+    embeddings = vector_store._local_embeddings()
+
+    assert isinstance(embeddings, vector_store.LocalHashEmbeddings)
+
+
 def test_retrieval_node_uses_shared_vector_store(monkeypatch):
     import app.nodes.retrieval as retrieval
 
