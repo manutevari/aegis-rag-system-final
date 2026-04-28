@@ -7,6 +7,7 @@ import app.nodes.router as router
 from app.core.stability_patch import safe_get, safe_set
 from app.nodes.router import run as route
 from app.state import AgentState
+from app.utils.tracing import trace
 
 
 def test_agent_state_supports_mapping_get_and_item_access():
@@ -18,6 +19,22 @@ def test_agent_state_supports_mapping_get_and_item_access():
 
     state["intent"] = "rag"
     assert state.intent == "rag"
+
+
+def test_agent_state_can_be_unpacked_as_mapping():
+    state = AgentState(query="What is the travel policy?", trace_log=[])
+    unpacked = {**state, "route": "retrieval"}
+
+    assert unpacked["query"] == "What is the travel policy?"
+    assert unpacked["route"] == "retrieval"
+
+
+def test_trace_accepts_agent_state_object():
+    state = AgentState(query="What is the travel policy?", trace_log=[])
+    traced = trace(state, node="trace_start", data={"steps": 0})
+
+    assert traced["query"] == "What is the travel policy?"
+    assert traced["trace_log"][-1]["node"] == "trace_start"
 
 
 def test_safe_access_helpers_work_for_dict_and_agent_state():
