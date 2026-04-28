@@ -8,4 +8,4 @@ RUN mkdir -p data/policies
 RUN useradd -m -u 1000 raguser && chown -R raguser:raguser /app
 USER raguser
 EXPOSE 8000 8501
-CMD ["python", "main.py", "--mode", "ui"]
+CMD ["streamlit", "run", "streamlit_app.py", "--server.address=0.0.0.0", "--server.port=8501", "--server.headless=true"]
