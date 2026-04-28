@@ -1,53 +1,32 @@
 import streamlit as st
 
-# ==============================
-# ✅ USER-SELECTABLE MODELS (STRICT)
-# ==============================
-
 ALLOWED_LLM_MODELS = {
-    "gpt-5-nano",
-    "gpt-5-mini",
-    "gpt-4o-mini",
+    "llama3",
+    "llama3.1",
+    "mistral",
+    "phi3",
 }
 
 ALLOWED_EMBED_MODELS = {
-    "text-embedding-3-large",
-    "text-embedding-3-small",
+    "sentence-transformers/all-MiniLM-L6-v2",
+    "all-MiniLM-L6-v2",
+    "hash",
 }
 
 
-# ==============================
-# ✅ LLM MODEL (USER INPUT)
-# ==============================
-
 def get_llm_model():
-    """
-    This ONLY controls OpenAI fallback model.
-    OpenRouter models are handled internally (invoke_llm).
-    """
-
-    model = st.secrets.get("MODEL_NAME")
-
-    if not model:
-        raise ValueError("MODEL_NAME not set in Streamlit secrets")
+    model = st.secrets.get("OLLAMA_MODEL", "llama3")
 
     if model not in ALLOWED_LLM_MODELS:
-        raise ValueError(f"❌ Unauthorized LLM model: {model}")
+        raise ValueError(f"Unauthorized local model: {model}")
 
     return model
 
 
-# ==============================
-# ✅ EMBEDDING MODEL
-# ==============================
-
 def get_embedding_model():
-    model = st.secrets.get("EMBED_MODEL")
-
-    if not model:
-        raise ValueError("EMBED_MODEL not set in Streamlit secrets")
+    model = st.secrets.get("LOCAL_EMBED_MODEL", "sentence-transformers/all-MiniLM-L6-v2")
 
     if model not in ALLOWED_EMBED_MODELS:
-        raise ValueError(f"❌ Unauthorized embedding model: {model}")
+        raise ValueError(f"Unauthorized embedding model: {model}")
 
     return model
