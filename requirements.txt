@@ -30,6 +30,9 @@ pydantic>=2.7.0
 streamlit>=1.36.0
 python-dotenv>=1.0.0
 
+# Local/offline embeddings
+sentence-transformers>=2.7.0
+
 # Optional (keep if used)
 pypdf>=4.0.0
 psycopg2-binary>=2.9.9
