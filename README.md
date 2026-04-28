@@ -1,6 +1,6 @@
 # Decision-Grade Corporate Policy RAG Chatbot
 
-A production-grade, context-aware RAG chatbot for navigating complex, interconnected, and highly numerical corporate policy, built on LangGraph, LangChain, FAISS/Chroma, FastAPI, and Streamlit.
+A production-grade, context-aware RAG chatbot for navigating complex, interconnected, and highly numerical corporate policy, built on LangGraph, LangChain, Chroma, FastAPI, and Streamlit.
 
 ## Quick Start
 
@@ -8,6 +8,9 @@ A production-grade, context-aware RAG chatbot for navigating complex, interconne
 python -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
 cp .env.example .env   # set OPENAI_API_KEY
+
+# Optional: build the shared Chroma policy index manually
+python policy_ingestion.py
 
 # Streamlit UI -> http://localhost:8501
 streamlit run streamlit_app.py
@@ -41,15 +44,17 @@ Query -> Planner (grade-aware routing)
 | File | Purpose |
 |------|---------|
 | `streamlit_app.py` | Primary Streamlit chat UI and execution trace viewer |
-| `main.py` | Alternate Streamlit upload/rerank prototype |
+| `policy_ingestion.py` | Canonical ingestion entrypoint for policy files |
+| `app/core/vector_store.py` | Single Chroma store authority for ingestion and retrieval |
 | `api.py` | FastAPI REST API |
 | `app/graph/workflow.py` | Full LangGraph workflow |
 | `app/nodes/planner.py` | LLM + keyword grade-aware router |
+| `app/nodes/retrieval.py` | Graph retrieval node using the shared vector store |
 | `app/nodes/verifier.py` | Blocking quality gate |
 | `app/tools/compute.py` | Pure Python arithmetic helpers |
 | `app/tools/sql.py` | SQLite/PostgreSQL policy database |
-| `app/tools/retriever.py` | FAISS/Chroma vector search |
-| `tests/test_all.py` | Unit tests |
+| `tests/test_all.py` | Core unit tests |
+| `tests/test_vector_wiring.py` | Ingestion/retrieval wiring regression tests |
 
 ## Run Tests
 
@@ -67,4 +72,4 @@ docker-compose up -d
 
 ## Add Your Own Policies
 
-Drop `.txt`, `.md`, or `.pdf` files into `data/policies/`. They are auto-chunked and indexed on startup. Built-in sample policies (Travel T-04, Leave HR-07, Compensation C-03, IT IT-09, Reimbursement F-12) work out of the box.
+Drop `.txt`, `.md`, or `.pdf` files anywhere under `data/`. Streamlit auto-indexes them into the shared `db` Chroma store on startup, and `python policy_ingestion.py` can rebuild the index manually.
