@@ -1,42 +1,35 @@
-# Core LangChain ecosystem (MODERN ONLY)
+# Core LangChain
 langchain>=0.3.0
+langchain-core>=0.3.0
 langchain-openai>=0.2.0
 langchain-community>=0.3.0
 langchain-chroma>=0.1.4
 langchain-text-splitters>=0.3.0
-
-# Vector DB
-chromadb>=0.5.0
-
-# LLM
-openai>=1.40.0
-tiktoken>=0.7.0
-
-# Graph
 langgraph>=0.2.0
 
-# Data + Tools
+# Vector DB / Embeddings
+chromadb>=0.5.0
+openai>=1.40.0
+sentence-transformers>=2.7.0
+
+# Documents
+pypdf>=4.0.0
+
+# App / API
+streamlit>=1.36.0
+fastapi>=0.111.0
+uvicorn[standard]>=0.30.0
+pydantic>=2.7.0
+python-dotenv>=1.0.0
+
+# Data / Utilities
 pandas>=2.2.0
 numpy>=1.26.0
 plotly>=5.22.0
 matplotlib
-
-# Backend
-fastapi>=0.111.0
-uvicorn[standard]>=0.30.0
-pydantic>=2.7.0
-
-# App
-streamlit>=1.36.0
-python-dotenv>=1.0.0
-
-# Local/offline embeddings
-sentence-transformers>=2.7.0
-
-# Optional (keep if used)
-pypdf>=4.0.0
-psycopg2-binary>=2.9.9
+tiktoken>=0.7.0
 cryptography>=42.0.0
+psycopg2-binary>=2.9.9
 
 # Testing
 pytest>=8.0.0
