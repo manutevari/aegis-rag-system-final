@@ -185,6 +185,12 @@ def _document_id(doc: Document, index: int) -> str:
     return f"{safe_source}-{chunk_index}-{digest}"
 
 
+def _pinecone_index_names(indexes: Any) -> set:
+    if hasattr(indexes, "names"):
+        return set(indexes.names())
+    return {item.get("name") if isinstance(item, dict) else getattr(item, "name", None) for item in indexes}
+
+
 class PineconePolicyRetriever:
     def __init__(self, store: "PineconePolicyStore", search_kwargs: Optional[Dict[str, Any]] = None):
         self.store = store
@@ -219,7 +225,7 @@ class PineconePolicyStore:
 
         pc = Pinecone(api_key=self.settings.pinecone_key)
         if self.settings.pinecone_create_index and self.settings.pinecone_index_name:
-            existing = {item.get("name") if isinstance(item, dict) else getattr(item, "name", None) for item in pc.list_indexes()}
+            existing = _pinecone_index_names(pc.list_indexes())
             if self.settings.pinecone_index_name not in existing:
                 pc.create_index(
                     name=self.settings.pinecone_index_name,
