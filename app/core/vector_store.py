@@ -84,10 +84,14 @@ def _huggingface_embeddings():
 
 
 def get_embeddings() -> Embeddings:
-    provider = os.getenv("RAG_EMBEDDINGS_PROVIDER", "local").strip().lower()
+    provider = os.getenv("RAG_EMBEDDINGS_PROVIDER", "hash").strip().lower()
 
-    if provider == "hash":
+    if provider in {"hash", "local_hash", "offline"}:
         logger.info("Using deterministic local hash embeddings")
+        return LocalHashEmbeddings()
+
+    if provider != "local":
+        logger.warning("Unknown RAG_EMBEDDINGS_PROVIDER=%s; using hash embeddings", provider)
         return LocalHashEmbeddings()
 
     try:
