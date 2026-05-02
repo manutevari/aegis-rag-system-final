@@ -2,7 +2,7 @@
 Shared vector store factory for ingestion and retrieval.
 
 All policy indexing and query-time retrieval use this module so the persist
-directory, collection name, and embedding model stay aligned.
+directory, collection name, embedding model, and metadata filtering stay aligned.
 """
 
 import hashlib
@@ -11,7 +11,7 @@ import math
 import os
 import re
 from pathlib import Path
-from typing import Any, Iterable, List, Optional
+from typing import Any, Dict, Iterable, List, Optional
 
 from langchain_core.embeddings import Embeddings
 
@@ -84,10 +84,14 @@ def _huggingface_embeddings():
 
 
 def get_embeddings() -> Embeddings:
-    provider = os.getenv("RAG_EMBEDDINGS_PROVIDER", "local").strip().lower()
+    provider = os.getenv("RAG_EMBEDDINGS_PROVIDER", "hash").strip().lower()
 
-    if provider == "hash":
+    if provider in {"hash", "local_hash", "offline"}:
         logger.info("Using deterministic local hash embeddings")
+        return LocalHashEmbeddings()
+
+    if provider != "local":
+        logger.warning("Unknown RAG_EMBEDDINGS_PROVIDER=%s; using hash embeddings", provider)
         return LocalHashEmbeddings()
 
     try:
@@ -178,15 +182,22 @@ def index_documents(documents: Iterable[Any]) -> dict:
     }
 
 
-def get_retriever(k: int = 5):
-    return get_vectorstore().as_retriever(search_kwargs={"k": k})
+def get_retriever(k: int = 5, metadata_filter: Optional[Dict[str, Any]] = None):
+    search_kwargs: Dict[str, Any] = {"k": k}
+    if metadata_filter:
+        search_kwargs["filter"] = metadata_filter
+    return get_vectorstore().as_retriever(search_kwargs=search_kwargs)
 
 
-def search_documents(query: str, k: int = 5) -> List[Any]:
+def search_documents(
+    query: str,
+    k: int = 5,
+    metadata_filter: Optional[Dict[str, Any]] = None,
+) -> List[Any]:
     if not query:
         return []
 
-    retriever = get_retriever(k=k)
+    retriever = get_retriever(k=k, metadata_filter=metadata_filter)
     if hasattr(retriever, "invoke"):
         return list(retriever.invoke(query) or [])
     if hasattr(retriever, "get_relevant_documents"):
