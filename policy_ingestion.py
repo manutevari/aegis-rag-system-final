@@ -25,6 +25,7 @@ SUPPORTED_EXTENSIONS = {".txt", ".md", ".pdf"}
 DEFAULT_CHUNK_TOKENS = 450
 DEFAULT_TABLE_ROW_CHUNK = 18
 DEFAULT_OVERLAP_RATIO = 0.12
+DEFAULT_SECTION = "Overview"
 
 CATEGORY_KEYWORDS = {
     "travel": ["travel", "fuel", "mileage", "vehicle", "hotel", "flight", "rental", "taxi", "rideshare"],
@@ -255,7 +256,7 @@ def _split_section_blocks(lines: List[str]) -> List[Tuple[str, str]]:
 
 
 def _markdown_sections(text: str, default_h1: str) -> List[Tuple[Dict[str, str], List[Tuple[str, str]]]]:
-    headers = {"h1_header": default_h1, "h2_header": "", "h3_header": ""}
+    headers = {"h1_header": default_h1, "h2_header": DEFAULT_SECTION, "h3_header": ""}
     sections: List[Tuple[Dict[str, str], List[Tuple[str, str]]]] = []
     section_lines: List[str] = []
 
@@ -275,10 +276,10 @@ def _markdown_sections(text: str, default_h1: str) -> List[Tuple[Dict[str, str],
             value = match.group(2).strip()
             if level == 1:
                 headers["h1_header"] = value
-                headers["h2_header"] = ""
+                headers["h2_header"] = DEFAULT_SECTION
                 headers["h3_header"] = ""
             elif level == 2:
-                headers["h2_header"] = value
+                headers["h2_header"] = value or DEFAULT_SECTION
                 headers["h3_header"] = ""
             elif level == 3:
                 headers["h3_header"] = value
@@ -393,6 +394,8 @@ def split_documents(
             section_chunks = _build_section_chunks(blocks, max_tokens=max_tokens, table_row_limit=table_row_limit)
             for text, chunk_flags in section_chunks:
                 metadata = {**base_metadata, **headers, **chunk_flags}
+                metadata["h2_header"] = metadata.get("h2_header") or DEFAULT_SECTION
+                metadata["h3_header"] = metadata.get("h3_header") or ""
                 metadata["section_path"] = _section_path(metadata)
                 raw_chunks.append((text, metadata))
 
