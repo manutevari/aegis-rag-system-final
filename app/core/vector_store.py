@@ -1,8 +1,8 @@
 """
 Shared vector store factory for ingestion and retrieval.
 
-All policy indexing and query-time retrieval use this module so the persist
-directory, collection name, embedding model, and metadata filtering stay aligned.
+AEGIS uses OpenAI text-embedding-3-large and Pinecone when credentials are
+configured, with Chroma/hash fallbacks for local development and CI.
 """
 
 import hashlib
@@ -13,7 +13,10 @@ import re
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional
 
+from langchain_core.documents import Document
 from langchain_core.embeddings import Embeddings
+
+from app.core.settings import AppSettings, get_settings
 
 logger = logging.getLogger(__name__)
 
@@ -36,7 +39,8 @@ class LocalHashEmbeddings(Embeddings):
     """Deterministic local embedding fallback with no network dependency."""
 
     def __init__(self, dimension: Optional[int] = None):
-        self.dimension = dimension or int(os.getenv("LOCAL_HASH_EMBED_DIM", DEFAULT_HASH_DIMENSIONS))
+        settings = get_settings()
+        self.dimension = dimension or settings.local_hash_embed_dim or DEFAULT_HASH_DIMENSIONS
 
     def _embed(self, text: str) -> List[float]:
         vector = [0.0] * self.dimension
@@ -58,33 +62,79 @@ class LocalHashEmbeddings(Embeddings):
         return self._embed(text)
 
 
+class OpenAIEmbeddingModel(Embeddings):
+    """LangChain-compatible OpenAI embedding adapter."""
+
+    def __init__(self, settings: Optional[AppSettings] = None):
+        self.settings = settings or get_settings()
+        if not self.settings.openai_key:
+            raise ValueError("OPENAI_API_KEY is required for OpenAI embeddings")
+
+    def _client(self):
+        from openai import OpenAI
+
+        return OpenAI(api_key=self.settings.openai_key)
+
+    def _kwargs(self, texts: List[str]) -> Dict[str, Any]:
+        kwargs: Dict[str, Any] = {
+            "model": self.settings.openai_embedding_model,
+            "input": texts,
+        }
+        if self.settings.openai_embedding_dimensions > 0:
+            kwargs["dimensions"] = self.settings.openai_embedding_dimensions
+        return kwargs
+
+    def embed_documents(self, texts: List[str]) -> List[List[float]]:
+        if not texts:
+            return []
+        response = self._client().embeddings.create(**self._kwargs(texts))
+        ordered = sorted(response.data, key=lambda item: item.index)
+        return [list(item.embedding) for item in ordered]
+
+    def embed_query(self, text: str) -> List[float]:
+        return self.embed_documents([text])[0]
+
+
 def get_db_path() -> str:
-    return os.getenv("CHROMA_DIR") or os.getenv("VECTOR_DB_PATH") or DEFAULT_DB_PATH
+    settings = get_settings()
+    return settings.chroma_dir or os.getenv("VECTOR_DB_PATH") or DEFAULT_DB_PATH
 
 
 def get_collection_name() -> str:
-    return os.getenv("CHROMA_COLLECTION", DEFAULT_COLLECTION_NAME)
+    return get_settings().chroma_collection or DEFAULT_COLLECTION_NAME
 
 
 def _huggingface_embeddings():
-    if not _truthy_env("ALLOW_HF_DOWNLOADS", False):
+    settings = get_settings()
+    if not settings.allow_hf_downloads:
         os.environ.setdefault("HF_HUB_OFFLINE", "1")
 
     from langchain_community.embeddings import HuggingFaceEmbeddings
 
-    model_name = os.getenv("LOCAL_EMBED_MODEL", DEFAULT_LOCAL_EMBED_MODEL)
     model_kwargs = {}
-    if not _truthy_env("ALLOW_HF_DOWNLOADS", False):
+    if not settings.allow_hf_downloads:
         model_kwargs["local_files_only"] = True
 
     return HuggingFaceEmbeddings(
-        model_name=model_name,
+        model_name=settings.local_embed_model or DEFAULT_LOCAL_EMBED_MODEL,
         model_kwargs=model_kwargs,
     )
 
 
 def get_embeddings() -> Embeddings:
-    provider = os.getenv("RAG_EMBEDDINGS_PROVIDER", "hash").strip().lower()
+    settings = get_settings()
+    provider = settings.rag_embeddings_provider.strip().lower()
+
+    if provider == "openai":
+        if not settings.openai_key:
+            logger.warning("OPENAI_API_KEY is not set; using hash embeddings")
+            return LocalHashEmbeddings()
+        try:
+            logger.info("Using OpenAI embeddings model %s", settings.openai_embedding_model)
+            return OpenAIEmbeddingModel(settings=settings)
+        except Exception as exc:
+            logger.warning("OpenAI embeddings unavailable; using hash embeddings: %s", exc)
+            return LocalHashEmbeddings()
 
     if provider in {"hash", "local_hash", "offline"}:
         logger.info("Using deterministic local hash embeddings")
@@ -107,26 +157,177 @@ def get_embedding_function() -> Embeddings:
     return get_embeddings()
 
 
-def get_vectorstore():
-    """Return the singleton persistent Chroma store."""
-    global _vectorstore
+def _safe_metadata_value(value: Any) -> Any:
+    if value is None:
+        return None
+    if isinstance(value, (str, int, float, bool)):
+        return value
+    if isinstance(value, list):
+        return [str(item) for item in value if item is not None]
+    return str(value)
 
-    if _vectorstore is not None:
-        return _vectorstore
 
+def _sanitize_metadata(metadata: Dict[str, Any], content: str) -> Dict[str, Any]:
+    clean: Dict[str, Any] = {"content": content}
+    for key, value in (metadata or {}).items():
+        safe_value = _safe_metadata_value(value)
+        if safe_value is not None:
+            clean[str(key)] = safe_value
+    return clean
+
+
+def _document_id(doc: Document, index: int) -> str:
+    metadata = dict(getattr(doc, "metadata", {}) or {})
+    source = str(metadata.get("source_path") or metadata.get("source") or "document")
+    chunk_index = metadata.get("chunk_index", index)
+    digest = hashlib.sha1((doc.page_content or "").encode("utf-8")).hexdigest()[:12]
+    safe_source = re.sub(r"[^a-zA-Z0-9_-]+", "-", source).strip("-")[:80] or "document"
+    return f"{safe_source}-{chunk_index}-{digest}"
+
+
+class PineconePolicyRetriever:
+    def __init__(self, store: "PineconePolicyStore", search_kwargs: Optional[Dict[str, Any]] = None):
+        self.store = store
+        self.search_kwargs = search_kwargs or {}
+
+    def invoke(self, query: str) -> List[Document]:
+        return self.store.similarity_search(
+            query,
+            k=int(self.search_kwargs.get("k", 5)),
+            metadata_filter=self.search_kwargs.get("filter"),
+        )
+
+    def get_relevant_documents(self, query: str) -> List[Document]:
+        return self.invoke(query)
+
+
+class PineconePolicyStore:
+    """Small Pinecone wrapper matching the subset of Chroma used by AEGIS."""
+
+    def __init__(self, settings: AppSettings, embeddings: Embeddings):
+        self.settings = settings
+        self.embeddings = embeddings
+        self.index = self._index()
+
+    def _index(self):
+        from pinecone import Pinecone, ServerlessSpec
+
+        if not self.settings.pinecone_key:
+            raise ValueError("PINECONE_API_KEY is required for Pinecone")
+        if not self.settings.pinecone_index_name and not self.settings.pinecone_index_host:
+            raise ValueError("PINECONE_INDEX_NAME or PINECONE_INDEX_HOST is required")
+
+        pc = Pinecone(api_key=self.settings.pinecone_key)
+        if self.settings.pinecone_create_index and self.settings.pinecone_index_name:
+            existing = {item.get("name") if isinstance(item, dict) else getattr(item, "name", None) for item in pc.list_indexes()}
+            if self.settings.pinecone_index_name not in existing:
+                pc.create_index(
+                    name=self.settings.pinecone_index_name,
+                    dimension=self.settings.openai_embedding_dimensions,
+                    metric=self.settings.pinecone_metric,
+                    spec=ServerlessSpec(
+                        cloud=self.settings.pinecone_cloud,
+                        region=self.settings.pinecone_region,
+                    ),
+                    deletion_protection="disabled",
+                )
+
+        if self.settings.pinecone_index_host:
+            return pc.Index(host=self.settings.pinecone_index_host)
+        return pc.Index(self.settings.pinecone_index_name)
+
+    def add_documents(self, docs: List[Document]) -> None:
+        if not docs:
+            return
+
+        batch_size = max(int(self.settings.pinecone_batch_size or 100), 1)
+        namespace = self.settings.pinecone_namespace or None
+        for start in range(0, len(docs), batch_size):
+            batch = docs[start : start + batch_size]
+            vectors = self.embeddings.embed_documents([doc.page_content for doc in batch])
+            records = []
+            for offset, (doc, vector) in enumerate(zip(batch, vectors)):
+                records.append(
+                    {
+                        "id": _document_id(doc, start + offset),
+                        "values": vector,
+                        "metadata": _sanitize_metadata(dict(doc.metadata or {}), doc.page_content),
+                    }
+                )
+            kwargs: Dict[str, Any] = {"vectors": records}
+            if namespace:
+                kwargs["namespace"] = namespace
+            self.index.upsert(**kwargs)
+
+    def as_retriever(self, search_kwargs: Optional[Dict[str, Any]] = None) -> PineconePolicyRetriever:
+        return PineconePolicyRetriever(self, search_kwargs=search_kwargs)
+
+    def similarity_search(self, query: str, k: int = 5, metadata_filter: Optional[Dict[str, Any]] = None) -> List[Document]:
+        vector = self.embeddings.embed_query(query)
+        kwargs: Dict[str, Any] = {
+            "vector": vector,
+            "top_k": k,
+            "include_metadata": True,
+        }
+        if metadata_filter:
+            kwargs["filter"] = metadata_filter
+        if self.settings.pinecone_namespace:
+            kwargs["namespace"] = self.settings.pinecone_namespace
+
+        result = self.index.query(**kwargs)
+        matches = result.get("matches", []) if isinstance(result, dict) else getattr(result, "matches", [])
+        docs: List[Document] = []
+        for match in matches or []:
+            metadata = dict(match.get("metadata", {}) if isinstance(match, dict) else getattr(match, "metadata", {}) or {})
+            score = match.get("score") if isinstance(match, dict) else getattr(match, "score", None)
+            content = str(metadata.pop("content", ""))
+            metadata["pinecone_score"] = float(score or 0.0)
+            docs.append(Document(page_content=content, metadata=metadata))
+        return docs
+
+    def count(self) -> int:
+        stats = self.index.describe_index_stats()
+        if isinstance(stats, dict):
+            return int(stats.get("total_vector_count") or 0)
+        return int(getattr(stats, "total_vector_count", 0) or 0)
+
+
+def _get_chroma_store():
     from langchain_chroma import Chroma
 
     db_path = get_db_path()
     Path(db_path).mkdir(parents=True, exist_ok=True)
 
-    _vectorstore = Chroma(
+    return Chroma(
         collection_name=get_collection_name(),
         persist_directory=db_path,
         embedding_function=get_embeddings(),
     )
+
+
+def get_vectorstore():
+    """Return the singleton vector store."""
+    global _vectorstore
+
+    if _vectorstore is not None:
+        return _vectorstore
+
+    settings = get_settings()
+    if settings.use_pinecone:
+        if settings.pinecone_key and settings.openai_key:
+            try:
+                _vectorstore = PineconePolicyStore(settings=settings, embeddings=get_embeddings())
+                logger.info("Pinecone vector store ready: index=%s namespace=%s", settings.pinecone_index_name, settings.pinecone_namespace)
+                return _vectorstore
+            except Exception as exc:
+                logger.warning("Pinecone unavailable; falling back to Chroma: %s", exc)
+        else:
+            logger.warning("Pinecone/OpenAI credentials are not fully configured; falling back to Chroma")
+
+    _vectorstore = _get_chroma_store()
     logger.info(
-        "Vector store ready: Chroma path=%s collection=%s count=%s",
-        db_path,
+        "Chroma vector store ready: path=%s collection=%s count=%s",
+        get_db_path(),
         get_collection_name(),
         get_collection_count(_vectorstore),
     )
@@ -153,15 +354,20 @@ def persist_vectorstore(store: Optional[Any] = None) -> None:
 def get_collection_count(store: Optional[Any] = None) -> int:
     try:
         store = store or _vectorstore or get_vectorstore()
+        if isinstance(store, PineconePolicyStore):
+            return store.count()
         collection = getattr(store, "_collection", None)
         if collection is not None and hasattr(collection, "count"):
             return int(collection.count())
     except Exception as exc:
-        logger.debug("Could not read Chroma collection count: %s", exc)
+        logger.debug("Could not read collection count: %s", exc)
     return 0
 
 
 def has_persisted_index() -> bool:
+    settings = get_settings()
+    if settings.use_pinecone:
+        return bool(settings.pinecone_key and (settings.pinecone_index_name or settings.pinecone_index_host))
     return Path(get_db_path(), "chroma.sqlite3").exists()
 
 
@@ -174,11 +380,13 @@ def index_documents(documents: Iterable[Any]) -> dict:
     store.add_documents(docs)
     persist_vectorstore(store)
 
+    settings = get_settings()
     return {
         "chunks_indexed": len(docs),
         "collection_count": get_collection_count(store),
-        "db_path": get_db_path(),
-        "collection": get_collection_name(),
+        "db_path": get_db_path() if not isinstance(store, PineconePolicyStore) else None,
+        "collection": get_collection_name() if not isinstance(store, PineconePolicyStore) else settings.pinecone_index_name,
+        "vector_backend": "pinecone" if isinstance(store, PineconePolicyStore) else "chroma",
     }
 
 
@@ -225,6 +433,8 @@ class _LazyVectorStoreProxy:
 
     def search(self, query: Any, top_k: int = 5, **kwargs: Any) -> List[Any]:
         store = get_vectorstore()
+        if isinstance(store, PineconePolicyStore):
+            return store.similarity_search(str(query), k=top_k, metadata_filter=kwargs.get("filter"))
         if isinstance(query, str):
             return store.similarity_search(query, k=top_k, **kwargs)
         if hasattr(store, "similarity_search_by_vector"):
