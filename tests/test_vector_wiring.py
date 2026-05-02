@@ -20,6 +20,16 @@ def test_hash_embeddings_are_deterministic_without_network():
     assert any(value != 0 for value in first)
 
 
+def test_get_embeddings_defaults_to_hash_provider(monkeypatch):
+    import app.core.vector_store as vector_store
+
+    monkeypatch.delenv("RAG_EMBEDDINGS_PROVIDER", raising=False)
+
+    embeddings = vector_store.get_embeddings()
+
+    assert isinstance(embeddings, vector_store.LocalHashEmbeddings)
+
+
 def test_get_embeddings_can_force_hash_provider(monkeypatch):
     import app.core.vector_store as vector_store
 
@@ -45,6 +55,56 @@ def test_local_embeddings_fall_back_to_hash_when_model_unavailable(monkeypatch):
     assert isinstance(embeddings, vector_store.LocalHashEmbeddings)
 
 
+def test_semantic_chunking_preserves_tables_and_metadata():
+    import policy_ingestion
+
+    document = Document(
+        page_content=(
+            "# Travel Policy\n"
+            "**Document ID:** TRV-POL-9999-V1\n"
+            "**Effective Date:** January 1, 2026\n"
+            "**Policy Owner:** Travel Team\n\n"
+            "## Ground Transportation\n"
+            "Licensed taxis are reimbursable for airport transfers.\n\n"
+            "| Mode | Rule |\n"
+            "| --- | --- |\n"
+            "| Taxi | Standard licensed taxis are allowed. |\n"
+            "| Premium car | Not allowed unless with a client. |\n"
+        ),
+        metadata={
+            "source": "Travel Policy.txt",
+            "source_path": "travel/Travel Policy.txt",
+            "document_id": "TRV-POL-9999-V1",
+            "policy_category": "travel",
+            "policy_owner": "Travel Team",
+            "effective_date": "2026-01-01",
+            "h1_header": "Travel Policy",
+            "grade_level": 3,
+        },
+    )
+
+    chunks = policy_ingestion.split_documents([document], chunk_size=80)
+    issues = policy_ingestion.verify_ingestion_chunks(chunks)
+
+    assert issues == []
+    assert all(chunk.metadata["h2_header"] for chunk in chunks)
+    assert any(chunk.metadata["contains_table"] for chunk in chunks)
+    table_chunk = next(chunk for chunk in chunks if chunk.metadata["contains_table"])
+    assert "| Mode | Rule |" in table_chunk.page_content
+    assert table_chunk.metadata["section_path"] == "Travel Policy > Ground Transportation"
+
+
+def test_retrieval_expands_taxi_query_and_adds_travel_filter():
+    import app.nodes.retrieval as retrieval
+
+    expansions = retrieval._expand_query("Can I expense a taxi?")
+    metadata_filter = retrieval._metadata_filter("Can I expense a taxi?")
+
+    assert any("licensed taxi" in expansion for expansion in expansions)
+    assert any("ground transportation" in expansion for expansion in expansions)
+    assert metadata_filter == {"policy_category": "travel"}
+
+
 def test_retrieval_node_uses_shared_vector_store(monkeypatch):
     import app.nodes.retrieval as retrieval
 
@@ -54,18 +114,19 @@ def test_retrieval_node_uses_shared_vector_store(monkeypatch):
             return [
                 Document(
                     page_content="Fuel receipts are reimbursable for rental cars only.",
-                    metadata={"source": "Fuel and Mileage Policy.txt"},
+                    metadata={"source": "Fuel and Mileage Policy.txt", "policy_category": "travel"},
                 )
             ]
 
     monkeypatch.setattr(retrieval, "ensure_vectorstore_ready", lambda auto_ingest=True: 1)
-    monkeypatch.setattr(retrieval, "get_retriever", lambda k=5: FakeRetriever())
+    monkeypatch.setattr(retrieval, "get_retriever", lambda k=5, metadata_filter=None: FakeRetriever())
 
     result = retrieval.run(AgentState(query="fuel reimbursement", trace_log=[]))
 
     assert result["documents"][0]["source"] == "Fuel and Mileage Policy.txt"
     assert result["retrieval_docs"]
     assert "Fuel receipts" in result["context"]
+    assert result["metadata_filter"] == {"policy_category": "travel"}
     assert result["trace_log"][-1]["data"]["chunks"] == 1
 
 
@@ -101,6 +162,11 @@ def test_policy_ingestion_indexes_through_shared_store(tmp_path, monkeypatch):
 
     policy_file = tmp_path / "Fuel Policy.txt"
     policy_file.write_text(
+        "# Fuel Policy\n\n"
+        "**Document ID:** TRV-POL-3012-V2\n"
+        "**Effective Date:** April 1, 2026\n"
+        "**Policy Owner:** Fleet Team\n\n"
+        "## Fuel Reimbursement\n"
         "Fuel reimbursement applies to rental vehicles. Personal mileage claims cannot include fuel receipts.",
         encoding="utf-8",
     )
@@ -123,3 +189,4 @@ def test_policy_ingestion_indexes_through_shared_store(tmp_path, monkeypatch):
     assert result["chunks_indexed"] > 0
     assert calls["chunks"]
     assert calls["chunks"][0].metadata["policy_category"] == "travel"
+    assert calls["chunks"][0].metadata["document_id"] == "TRV-POL-3012-V2"
