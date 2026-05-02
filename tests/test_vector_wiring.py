@@ -8,6 +8,12 @@ from langchain_core.documents import Document
 from app.state import AgentState
 
 
+def _clear_settings_cache():
+    from app.core.settings import get_settings
+
+    get_settings.cache_clear()
+
+
 def test_hash_embeddings_are_deterministic_without_network():
     from app.core.vector_store import LocalHashEmbeddings
 
@@ -20,10 +26,12 @@ def test_hash_embeddings_are_deterministic_without_network():
     assert any(value != 0 for value in first)
 
 
-def test_get_embeddings_defaults_to_hash_provider(monkeypatch):
+def test_get_embeddings_defaults_to_hash_provider_without_openai_key(monkeypatch):
     import app.core.vector_store as vector_store
 
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
     monkeypatch.delenv("RAG_EMBEDDINGS_PROVIDER", raising=False)
+    _clear_settings_cache()
 
     embeddings = vector_store.get_embeddings()
 
@@ -34,6 +42,7 @@ def test_get_embeddings_can_force_hash_provider(monkeypatch):
     import app.core.vector_store as vector_store
 
     monkeypatch.setenv("RAG_EMBEDDINGS_PROVIDER", "hash")
+    _clear_settings_cache()
 
     embeddings = vector_store.get_embeddings()
 
@@ -49,6 +58,7 @@ def test_local_embeddings_fall_back_to_hash_when_model_unavailable(monkeypatch):
         "_huggingface_embeddings",
         lambda: (_ for _ in ()).throw(RuntimeError("model not cached")),
     )
+    _clear_settings_cache()
 
     embeddings = vector_store.get_embeddings()
 
@@ -118,8 +128,10 @@ def test_retrieval_node_uses_shared_vector_store(monkeypatch):
                 )
             ]
 
+    monkeypatch.delenv("COHERE_API_KEY", raising=False)
     monkeypatch.setattr(retrieval, "ensure_vectorstore_ready", lambda auto_ingest=True: 1)
     monkeypatch.setattr(retrieval, "get_retriever", lambda k=5, metadata_filter=None: FakeRetriever())
+    _clear_settings_cache()
 
     result = retrieval.run(AgentState(query="fuel reimbursement", trace_log=[]))
 
