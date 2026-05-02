@@ -23,6 +23,8 @@ uvicorn api:app --reload --host 0.0.0.0 --port 8000
 
 The vector layer is local-first. It tries cached Hugging Face embeddings and falls back to deterministic hash embeddings, so ingestion and retrieval can run with no internet access.
 
+Generation defaults to the built-in extractive policy model, so FastAPI does not require Ollama or a running `localhost:11434` service.
+
 ```bash
 # Guaranteed no-download local mode
 RAG_EMBEDDINGS_PROVIDER=hash python policy_ingestion.py
@@ -30,9 +32,12 @@ RAG_EMBEDDINGS_PROVIDER=hash python policy_ingestion.py
 # Prefer cached Hugging Face embeddings, then fallback to hash
 RAG_EMBEDDINGS_PROVIDER=local python policy_ingestion.py
 
-# Local generation through Ollama
+# FastAPI without Ollama
+LLM_PROVIDER=extractive uvicorn api:app --reload --host 0.0.0.0 --port 8000
+
+# Optional: local generation through Ollama
 ollama run llama3
-streamlit run streamlit_app.py
+LLM_PROVIDER=ollama uvicorn api:app --reload --host 0.0.0.0 --port 8000
 ```
 
 ## Architecture
