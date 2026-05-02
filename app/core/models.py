@@ -172,7 +172,7 @@ def get_llm(model_override: Optional[str] = None, temperature: Optional[float] =
         try:
             from langchain_community.llms import Ollama
 
-            kwargs = {"model": model, "temperature": temperature or 0.0, "base_url": base_url}
+            kwargs = {"model": model, "temperature": temperature if temperature is not None else 0.0, "base_url": base_url}
             if max_tokens is not None:
                 kwargs["num_predict"] = max_tokens
             return Ollama(**kwargs)
@@ -184,7 +184,7 @@ def get_llm(model_override: Optional[str] = None, temperature: Optional[float] =
     return LocalPolicyModel()
 
 
-def invoke_llm(messages: list, model_override: Optional[str] = None, temperature: float = 0):
+def invoke_llm(messages: list, model_override: Optional[str] = None, temperature: Optional[float] = None):
     """Invoke the configured generation stack."""
     llm = get_llm(model_override=model_override, temperature=temperature)
     try:
