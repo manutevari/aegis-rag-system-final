@@ -1,38 +1,27 @@
-from pathlib import Path
+def test_hosted_provider_defaults_are_explicit(monkeypatch):
+    from app.core.settings import get_settings
 
-ROOT = Path(__file__).resolve().parents[1]
-SKIP_DIRS = {".git", "__pycache__", ".pytest_cache", "db", ".streamlit", ".venv", "venv"}
-REMOTE_TOKEN = "op" + "en" + "ai"
-FORBIDDEN = [
-    "Open" + "AI",
-    "Chat" + "Open" + "AI",
-    "OPEN" + "AI_API_KEY",
-    "langchain_" + REMOTE_TOKEN,
-    "langchain-" + REMOTE_TOKEN,
-    REMOTE_TOKEN,
-]
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.delenv("COHERE_API_KEY", raising=False)
+    monkeypatch.delenv("PINECONE_API_KEY", raising=False)
+    get_settings.cache_clear()
 
+    settings = get_settings()
 
-def _iter_text_files():
-    for path in ROOT.rglob("*"):
-        if any(part in SKIP_DIRS for part in path.parts):
-            continue
-        if not path.is_file():
-            continue
-        if path.suffix.lower() in {".pyc", ".png", ".jpg", ".jpeg", ".pdf", ".sqlite3"}:
-            continue
-        yield path
+    assert settings.openai_model == "gpt-4o-mini"
+    assert settings.openai_embedding_model == "text-embedding-3-large"
+    assert settings.openai_embedding_dimensions == 3072
+    assert settings.rerank_provider == "cohere"
+    assert settings.cohere_rerank_model == "rerank-v3.5"
+    assert settings.vector_backend == "pinecone"
 
 
-def test_no_hosted_model_hooks_remain():
-    hits = []
-    for path in _iter_text_files():
-        try:
-            text = path.read_text(encoding="utf-8")
-        except UnicodeDecodeError:
-            continue
-        for needle in FORBIDDEN:
-            if needle in text:
-                hits.append(f"{path.relative_to(ROOT)}: {needle}")
+def test_missing_hosted_keys_keep_safe_fallbacks(monkeypatch):
+    from app.core.settings import get_settings
+    from app.core.vector_store import LocalHashEmbeddings, get_embeddings
 
-    assert hits == []
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.setenv("RAG_EMBEDDINGS_PROVIDER", "openai")
+    get_settings.cache_clear()
+
+    assert isinstance(get_embeddings(), LocalHashEmbeddings)
