@@ -12,6 +12,12 @@ cp .env .env.local
 # Local fallback mode, no hosted keys required
 RAG_EMBEDDINGS_PROVIDER=hash VECTOR_BACKEND=chroma LLM_PROVIDER=extractive python policy_ingestion.py
 RAG_EMBEDDINGS_PROVIDER=hash VECTOR_BACKEND=chroma LLM_PROVIDER=extractive uvicorn api:app --reload --host 0.0.0.0 --port 8000
+
+# Colab-style Python chat with node chart -> http://localhost:8501
+RAG_EMBEDDINGS_PROVIDER=hash VECTOR_BACKEND=chroma LLM_PROVIDER=extractive streamlit run aegis_colab_chat.py --server.fileWatcherType none
+
+# Simple .py terminal chat
+python aegis_colab_chat.py --cli --grade L3
 ```
 
 ## Hosted Provider Stack
@@ -53,6 +59,7 @@ Build and run with the hosted stack:
 python policy_ingestion.py
 uvicorn api:app --reload --host 0.0.0.0 --port 8000
 streamlit run streamlit_app.py --server.fileWatcherType none
+streamlit run aegis_colab_chat.py --server.fileWatcherType none
 ```
 
 If any hosted credential is missing, the app falls back safely: OpenAI generation falls back to extractive local answers, OpenAI embeddings fall back to hash embeddings, and Pinecone falls back to Chroma.
@@ -72,6 +79,10 @@ PINECONE_CREATE_INDEX=true
 ```
 
 For production, create the index in Pinecone first and set `PINECONE_INDEX_HOST`.
+
+## Colab-Style Python Chat
+
+`aegis_colab_chat.py` is a single-file `.py` interface inspired by `aegis-ai-rag-system`. It uses the final repo's LangGraph workflow for RAG answers, keeps Pydantic turn metadata, draws a Matplotlib chart for every workflow node, shows retrieved chunk charts, and includes a basic chat fallback for greetings, help, and identity questions.
 
 ## AEGIS Ingestion Engine
 
@@ -127,6 +138,7 @@ User query
 | `app/nodes/planner.py` | Rule-based grade-aware router |
 | `app/nodes/verifier.py` | Blocking quality gate |
 | `streamlit_app.py` | Primary Streamlit chat UI and execution trace viewer |
+| `aegis_colab_chat.py` | Colab-style Python chat UI/CLI with per-node workflow chart and basic chat fallback |
 | `api.py` | FastAPI REST API |
 | `tests/test_all.py` | Core unit tests |
 | `tests/test_vector_wiring.py` | Ingestion/retrieval wiring regression tests |
