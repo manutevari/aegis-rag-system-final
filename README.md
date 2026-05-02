@@ -9,37 +9,69 @@ python -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
 cp .env .env.local
 
-# Build the shared policy index
-RAG_EMBEDDINGS_PROVIDER=hash python policy_ingestion.py
-
-# Streamlit UI -> http://localhost:8501
-RAG_EMBEDDINGS_PROVIDER=hash LLM_PROVIDER=extractive streamlit run streamlit_app.py --server.fileWatcherType none
-
-# REST API -> http://localhost:8000/docs
-RAG_EMBEDDINGS_PROVIDER=hash LLM_PROVIDER=extractive uvicorn api:app --reload --host 0.0.0.0 --port 8000
+# Local fallback mode, no hosted keys required
+RAG_EMBEDDINGS_PROVIDER=hash VECTOR_BACKEND=chroma LLM_PROVIDER=extractive python policy_ingestion.py
+RAG_EMBEDDINGS_PROVIDER=hash VECTOR_BACKEND=chroma LLM_PROVIDER=extractive uvicorn api:app --reload --host 0.0.0.0 --port 8000
 ```
 
-## Local Runtime
+## Hosted Provider Stack
 
-The default runtime is deliberately local and deployment-safe:
+AEGIS is configured for this production stack:
 
-- `LLM_PROVIDER=extractive` avoids a hard dependency on Ollama and prevents `localhost:11434` connection errors.
-- `RAG_EMBEDDINGS_PROVIDER=hash` avoids `torch`, `torchvision`, and `transformers` imports in constrained Streamlit/FastAPI environments.
-- Chroma remains the shared vector store and supports metadata filters for policy category, document id, effective date, source, and section headers.
+- OpenAI `gpt-4o-mini` for grounded answer generation.
+- OpenAI `text-embedding-3-large` for dense embeddings.
+- Pinecone for metadata-filtered vector storage and retrieval.
+- Cohere `rerank-v3.5` for final context reranking.
+- Pydantic settings in `app/core/settings.py` for typed provider configuration.
 
-Optional dense-model mode is still available when the environment supports it:
+Set these environment variables in `.env.local`, your deployment secrets, or your hosting platform:
 
 ```bash
-# Prefer cached Hugging Face embeddings, then fallback to hash
-RAG_EMBEDDINGS_PROVIDER=local python policy_ingestion.py
+OPENAI_API_KEY=...
+COHERE_API_KEY=...
+PINECONE_API_KEY=...
 
-# Optional Ollama generation
-ollama run llama3
-LLM_PROVIDER=ollama uvicorn api:app --reload --host 0.0.0.0 --port 8000
+LLM_PROVIDER=openai
+OPENAI_MODEL=gpt-4o-mini
+RAG_EMBEDDINGS_PROVIDER=openai
+OPENAI_EMBEDDING_MODEL=text-embedding-3-large
+OPENAI_EMBEDDING_DIMENSIONS=3072
 
-# Optional cross-encoder reranking when sentence-transformers is installed
-RERANK_PROVIDER=cross_encoder RERANK_MODEL=BAAI/bge-reranker-base uvicorn api:app --reload
+VECTOR_BACKEND=pinecone
+PINECONE_INDEX_NAME=aegis-policies
+PINECONE_NAMESPACE=default
+# Recommended in production to avoid one extra control-plane lookup:
+PINECONE_INDEX_HOST=your-index-host.pinecone.io
+
+RERANK_PROVIDER=cohere
+COHERE_RERANK_MODEL=rerank-v3.5
 ```
+
+Build and run with the hosted stack:
+
+```bash
+python policy_ingestion.py
+uvicorn api:app --reload --host 0.0.0.0 --port 8000
+streamlit run streamlit_app.py --server.fileWatcherType none
+```
+
+If any hosted credential is missing, the app falls back safely: OpenAI generation falls back to extractive local answers, OpenAI embeddings fall back to hash embeddings, and Pinecone falls back to Chroma.
+
+## Pinecone Index
+
+For `text-embedding-3-large`, create a dense Pinecone index with:
+
+- dimension: `3072`
+- metric: `cosine`
+- cloud/region: defaults are `aws` / `us-east-1`
+
+You can let the app create the index in development by setting:
+
+```bash
+PINECONE_CREATE_INDEX=true
+```
+
+For production, create the index in Pinecone first and set `PINECONE_INDEX_HOST`.
 
 ## AEGIS Ingestion Engine
 
@@ -50,7 +82,7 @@ RERANK_PROVIDER=cross_encoder RERANK_MODEL=BAAI/bge-reranker-base uvicorn api:ap
 3. Sequential overlap adds a 10-15% context bridge between neighboring chunks.
 4. Metadata extraction attaches `document_id`, `policy_category`, `policy_owner`, `effective_date`, `last_revised`, `h1_header`, `h2_header`, `h3_header`, `source_path`, and `section_path` to every chunk.
 5. Ingestion verification blocks indexing if required metadata is missing or a chunk is empty.
-6. Upsertion batches the verified chunks into the shared Chroma collection with their metadata payloads.
+6. Upsertion batches the verified chunks into Pinecone with metadata payloads when configured, otherwise Chroma.
 
 ## Advanced Retrieval Pipeline
 
@@ -61,7 +93,7 @@ RERANK_PROVIDER=cross_encoder RERANK_MODEL=BAAI/bge-reranker-base uvicorn api:ap
 3. Metadata pre-filtering applies category filters such as `policy_category == travel` before vector search.
 4. Broad retrieval pools up to 25 chunks across the raw query, expanded queries, and HyDE query.
 5. Latest-version post-filtering keeps the newest effective policy version when multiple versions of a policy family are retrieved.
-6. Reranking scores pooled chunks and passes only the top 5 into generation to reduce lost-in-the-middle failures.
+6. Cohere reranking scores pooled chunks and passes only the top 5 into generation, with lexical fallback if no Cohere key is configured.
 
 ## Architecture
 
@@ -72,11 +104,11 @@ User query
        -> query expansion
        -> HyDE-style search text
        -> metadata pre-filter
-       -> broad vector retrieval
+       -> OpenAI embeddings + Pinecone vector retrieval
        -> latest-version post-filter
-       -> rerank top 5
+       -> Cohere rerank top 5
   -> context assembler / token manager
-  -> grounded generator
+  -> OpenAI gpt-4o-mini grounded generator
   -> confidence and verifier
   -> retry or HITL fallback
   -> trace end
@@ -86,10 +118,11 @@ User query
 
 | File | Purpose |
 |------|---------|
+| `app/core/settings.py` | Pydantic runtime settings for OpenAI, Cohere, Pinecone, Chroma, and local fallbacks |
 | `policy_ingestion.py` | Project Aegis ingestion engine: markdown chunking, table preservation, metadata extraction, verification, upsert |
-| `app/core/vector_store.py` | Shared Chroma store, embedding provider selection, metadata-filtered retrieval |
-| `app/nodes/retrieval.py` | Query expansion, HyDE-style retrieval, metadata filters, post-filtering, reranking |
-| `app/core/models.py` | Ollama-optional local generation with extractive fallback |
+| `app/core/vector_store.py` | OpenAI embeddings, Pinecone vector store, Chroma/hash fallbacks, metadata-filtered retrieval |
+| `app/nodes/retrieval.py` | Query expansion, HyDE-style retrieval, metadata filters, post-filtering, Cohere reranking |
+| `app/core/models.py` | OpenAI `gpt-4o-mini` generation with extractive/Ollama fallback paths |
 | `app/graph/workflow.py` | Full LangGraph workflow |
 | `app/nodes/planner.py` | Rule-based grade-aware router |
 | `app/nodes/verifier.py` | Blocking quality gate |
@@ -113,4 +146,4 @@ docker-compose up -d
 
 ## Add Your Own Policies
 
-Drop `.txt`, `.md`, or `.pdf` files anywhere under `data/`. Streamlit auto-indexes them into the shared `db` Chroma store on startup, and `python policy_ingestion.py` can rebuild the index manually.
+Drop `.txt`, `.md`, or `.pdf` files anywhere under `data/`. Streamlit auto-indexes them into the configured vector store on startup, and `python policy_ingestion.py` can rebuild the index manually.

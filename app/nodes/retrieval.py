@@ -11,6 +11,7 @@ import re
 from datetime import date, datetime
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 
+from app.core.settings import get_settings
 from app.core.stability_patch import safe_get, with_updates
 from app.core.vector_store import ensure_vectorstore_ready, get_retriever
 from app.state import AgentState
@@ -206,15 +207,42 @@ def _lexical_score(query: str, doc: Any) -> float:
     category = _detect_policy_category(query)
     category_bonus = 0.15 if category and metadata.get("policy_category") == category else 0.0
     table_bonus = 0.05 if metadata.get("contains_table") else 0.0
-    return overlap + phrase_bonus + category_bonus + table_bonus
+    pinecone_bonus = min(float(metadata.get("pinecone_score", 0.0) or 0.0), 1.0) * 0.1
+    return overlap + phrase_bonus + category_bonus + table_bonus + pinecone_bonus
+
+
+def _cohere_scores(query: str, docs: List[Any]) -> Optional[List[float]]:
+    settings = get_settings()
+    if not settings.cohere_key:
+        logger.warning("COHERE_API_KEY is not set; using lexical rerank")
+        return None
+
+    try:
+        import cohere
+
+        client = cohere.ClientV2(api_key=settings.cohere_key)
+        response = client.rerank(
+            model=settings.cohere_rerank_model or settings.rerank_model,
+            query=query,
+            documents=[_content(doc) for doc in docs],
+            top_n=len(docs),
+        )
+        scores = [0.0] * len(docs)
+        for result in response.results:
+            scores[int(result.index)] = float(result.relevance_score)
+        return scores
+    except Exception as exc:
+        logger.warning("Cohere rerank unavailable; using lexical rerank: %s", exc)
+        return None
 
 
 def _cross_encoder_scores(query: str, docs: List[Any]) -> Optional[List[float]]:
-    provider = os.getenv("RERANK_PROVIDER", "lexical").strip().lower()
+    settings = get_settings()
+    provider = settings.rerank_provider.strip().lower()
     if provider not in {"cross_encoder", "bge_reranker"}:
         return None
 
-    model_name = os.getenv("RERANK_MODEL", "BAAI/bge-reranker-base")
+    model_name = settings.rerank_model or "BAAI/bge-reranker-base"
     try:
         from sentence_transformers import CrossEncoder
 
@@ -226,8 +254,17 @@ def _cross_encoder_scores(query: str, docs: List[Any]) -> Optional[List[float]]:
         return None
 
 
+def _provider_scores(query: str, docs: List[Any]) -> Optional[List[float]]:
+    provider = get_settings().rerank_provider.strip().lower()
+    if provider == "cohere":
+        return _cohere_scores(query, docs)
+    if provider in {"cross_encoder", "bge_reranker"}:
+        return _cross_encoder_scores(query, docs)
+    return None
+
+
 def _rerank(query: str, docs: List[Any], final_k: int) -> List[Tuple[Any, float]]:
-    scores = _cross_encoder_scores(query, docs)
+    scores = _provider_scores(query, docs)
     if scores is None:
         scores = [_lexical_score(query, doc) for doc in docs]
 
@@ -258,13 +295,14 @@ def _context_block(doc: Dict[str, Any]) -> str:
 
 
 def run(state: AgentState) -> AgentState:
+    settings = get_settings()
     query = safe_get(state, "query", "") or ""
     grade = safe_get(state, "employee_grade")
     history = safe_get(state, "history") or []
     vector_memory = safe_get(state, "vector_memory")
 
-    final_k = min(max(int(os.getenv("RERANK_TOP_K", DEFAULT_FINAL_K)), 1), 10)
-    broad_k = min(max(int(os.getenv("RETRIEVAL_BROAD_K", DEFAULT_BROAD_K)), final_k), 50)
+    final_k = min(max(int(settings.rerank_top_k or DEFAULT_FINAL_K), 1), 10)
+    broad_k = min(max(int(settings.retrieval_broad_k or DEFAULT_BROAD_K), final_k), 50)
     metadata_filter = _metadata_filter(query)
     category = metadata_filter.get("policy_category") if metadata_filter else None
 
@@ -316,7 +354,7 @@ def run(state: AgentState) -> AgentState:
             "final_k": final_k,
             "pooled_chunks": len(pooled),
             "filter_fallback": filter_fallback,
-            "reranker": os.getenv("RERANK_PROVIDER", "lexical"),
+            "reranker": settings.rerank_provider,
         },
     }
     if retrieval_error:
@@ -332,6 +370,7 @@ def run(state: AgentState) -> AgentState:
             "filter": metadata_filter or {},
             "expanded_queries": variants,
             "filter_fallback": filter_fallback,
+            "reranker": settings.rerank_provider,
             "error": retrieval_error,
         },
     )
