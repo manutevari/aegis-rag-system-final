@@ -4,7 +4,7 @@ import sys
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 
 import app.nodes.router as router
-from app.core.stability_patch import safe_get, safe_set
+from app.core.stability_patch import _sanitize_state, safe_get, safe_set
 from app.nodes.router import run as route
 from app.state import AgentState
 from app.utils.tracing import trace
@@ -49,6 +49,18 @@ def test_safe_access_helpers_work_for_dict_and_agent_state():
 
     assert raw["intent"] == "compute"
     assert model.intent == "rag"
+
+
+def test_runtime_model_survives_state_sanitization():
+    sanitized = _sanitize_state(
+        {
+            "query": "What is the fuel policy?",
+            "trace_log": [],
+            "model": " gemini-2.5-flash ",
+        }
+    )
+
+    assert sanitized["model"] == "gemini-2.5-flash"
 
 
 def test_router_accepts_agent_state_and_routes_policy_query():
