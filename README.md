@@ -9,42 +9,37 @@ python -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
 cp .env .env.local
 
-# Local fallback mode, no hosted keys required
-RAG_EMBEDDINGS_PROVIDER=hash VECTOR_BACKEND=chroma LLM_PROVIDER=extractive python policy_ingestion.py
-RAG_EMBEDDINGS_PROVIDER=hash VECTOR_BACKEND=chroma LLM_PROVIDER=extractive uvicorn api:app --reload --host 0.0.0.0 --port 8000
+# Local-first mode, no hosted model keys required
+RAG_EMBEDDINGS_PROVIDER=hash VECTOR_BACKEND=chroma LLM_PROVIDER=local_auto python policy_ingestion.py
+RAG_EMBEDDINGS_PROVIDER=hash VECTOR_BACKEND=chroma LLM_PROVIDER=local_auto uvicorn api:app --reload --host 0.0.0.0 --port 8000
 ```
 
-## Hosted Provider Stack
+## Local LLM Orchestration
 
-AEGIS is configured for this production stack:
+AEGIS now routes generation through a local-only decision manager in `app/core/llm_decision_manager.py`. It skips hosted models and tries only these local runtimes:
 
-- OpenAI `gpt-4o-mini` or Google Gemini for grounded answer generation.
-- OpenAI `text-embedding-3-large` or Google `gemini-embedding-001` for dense embeddings.
-- Pinecone for metadata-filtered vector storage and retrieval.
-- Cohere `rerank-v3.5` for final context reranking.
-- Pydantic settings in `app/core/settings.py` for typed provider configuration.
+1. `ollama`, if the Ollama server is reachable and the requested model is available.
+2. `llama_cpp`, using a local OpenAI-compatible llama.cpp server.
+3. `mistral_local`, using a local OpenAI-compatible Mistral endpoint.
+4. `extractive`, the deterministic fallback when no local runtime is working.
 
-Set these environment variables in `.env.local`, your deployment secrets, or your hosting platform:
+Configure the local runtime stack with environment variables or the Streamlit sidebar:
 
 ```bash
-OPENAI_API_KEY=...
-COHERE_API_KEY=...
-PINECONE_API_KEY=...
+LLM_PROVIDER=local_auto
+LOCAL_LLM_ORDER=ollama,llama_cpp,mistral_local
+LOCAL_ORCHESTRATION_MODEL=llama3.1
+LOCAL_GENERATION_MODEL=mistral
+LOCAL_SUMMARY_MODEL=mistral
 
-LLM_PROVIDER=openai
-OPENAI_MODEL=gpt-4o-mini
-RAG_EMBEDDINGS_PROVIDER=openai
-OPENAI_EMBEDDING_MODEL=text-embedding-3-large
-OPENAI_EMBEDDING_DIMENSIONS=3072
+OLLAMA_BASE_URL=http://localhost:11434
+OLLAMA_MODEL=mistral
 
-VECTOR_BACKEND=pinecone
-PINECONE_INDEX_NAME=aegis-policies
-PINECONE_NAMESPACE=default
-# Recommended in production to avoid one extra control-plane lookup:
-PINECONE_INDEX_HOST=your-index-host.pinecone.io
+LLAMA_CPP_BASE_URL=http://localhost:8080/v1
+LLAMA_CPP_MODEL=local-model
 
-RERANK_PROVIDER=cohere
-COHERE_RERANK_MODEL=rerank-v3.5
+MISTRAL_LOCAL_BASE_URL=http://localhost:8000/v1
+MISTRAL_LOCAL_MODEL=mistral
 ```
 
 To use a Gemini API key instead, store the key as `GEMINI_API_KEY` and switch either or both hosted providers. `GOOGLE_API_KEY` remains supported as a fallback alias.
@@ -60,8 +55,20 @@ RAG_EMBEDDINGS_PROVIDER=gemini
 GOOGLE_EMBEDDING_MODEL=gemini-embedding-001
 GOOGLE_EMBEDDING_DIMENSIONS=3072
 ```
+You can force one runtime by setting `LLM_PROVIDER=ollama`, `LLM_PROVIDER=llama_cpp`, `LLM_PROVIDER=mistral_local`, or `LLM_PROVIDER=extractive`.
 
-Build and run with the hosted stack:
+The decision manager is node-aware: orchestration-style nodes use `LOCAL_ORCHESTRATION_MODEL`, summarization uses `LOCAL_SUMMARY_MODEL`, and grounded answer generation uses `LOCAL_GENERATION_MODEL` unless a node passes an explicit model override.
+
+## Retrieval Stack
+
+The default retrieval stack is local-friendly:
+
+- Hash embeddings for deterministic offline retrieval.
+- Chroma for local vector storage.
+- Lexical/local reranking by default.
+- Pinecone, OpenAI, Gemini, and Cohere settings remain in the code for compatibility, but the local LLM decision manager does not select hosted models.
+
+Build and run locally:
 
 ```bash
 python policy_ingestion.py
@@ -69,23 +76,9 @@ uvicorn api:app --reload --host 0.0.0.0 --port 8000
 streamlit run streamlit_app.py --server.fileWatcherType none
 ```
 
-If any hosted credential is missing, the app falls back safely: OpenAI or Google generation falls back to extractive local answers, hosted embeddings fall back to hash embeddings, and Pinecone falls back to Chroma.
-
 ## Pinecone Index
 
-For `text-embedding-3-large` and `gemini-embedding-001` with the default configuration, create a dense Pinecone index with:
-
-- dimension: `3072`
-- metric: `cosine`
-- cloud/region: defaults are `aws` / `us-east-1`
-
-You can let the app create the index in development by setting:
-
-```bash
-PINECONE_CREATE_INDEX=true
-```
-
-For production, create the index in Pinecone first and set `PINECONE_INDEX_HOST`.
+If you explicitly enable Pinecone with hosted embeddings, create a dense Pinecone index matching the configured embedding dimension and metric. Local default mode does not require Pinecone.
 
 ## AEGIS Ingestion Engine
 
@@ -96,7 +89,7 @@ For production, create the index in Pinecone first and set `PINECONE_INDEX_HOST`
 3. Sequential overlap adds a 10-15% context bridge between neighboring chunks.
 4. Metadata extraction attaches `document_id`, `policy_category`, `policy_owner`, `effective_date`, `last_revised`, `h1_header`, `h2_header`, `h3_header`, `source_path`, and `section_path` to every chunk.
 5. Ingestion verification blocks indexing if required metadata is missing or a chunk is empty.
-6. Upsertion batches the verified chunks into Pinecone with metadata payloads when configured, otherwise Chroma.
+6. Upsertion batches the verified chunks into the configured vector store.
 
 ## Advanced Retrieval Pipeline
 
@@ -107,7 +100,7 @@ For production, create the index in Pinecone first and set `PINECONE_INDEX_HOST`
 3. Metadata pre-filtering applies category filters such as `policy_category == travel` before vector search.
 4. Broad retrieval pools up to 25 chunks across the raw query, expanded queries, and HyDE query.
 5. Latest-version post-filtering keeps the newest effective policy version when multiple versions of a policy family are retrieved.
-6. Cohere reranking scores pooled chunks and passes only the top 5 into generation, with lexical fallback if no Cohere key is configured.
+6. Reranking passes only the top 5 into generation, with lexical fallback if no hosted reranker is configured.
 
 ## Architecture
 
@@ -118,11 +111,16 @@ User query
        -> query expansion
        -> HyDE-style search text
        -> metadata pre-filter
-       -> OpenAI/Google embeddings + Pinecone vector retrieval
+       -> local embeddings + vector retrieval
        -> latest-version post-filter
-       -> Cohere rerank top 5
+       -> rerank top 5
   -> context assembler / token manager
-  -> OpenAI/Gemini grounded generator
+  -> local LLM decision manager
+       -> Ollama if working
+       -> llama.cpp if working
+       -> Mistral local if working
+       -> extractive fallback
+  -> grounded generator
   -> confidence and verifier
   -> retry or HITL fallback
   -> trace end
@@ -132,18 +130,20 @@ User query
 
 | File | Purpose |
 |------|---------|
-| `app/core/settings.py` | Pydantic runtime settings for OpenAI, Google, Cohere, Pinecone, Chroma, and local fallbacks |
+| `app/core/llm_decision_manager.py` | Local-only node-aware model orchestration for Ollama, llama.cpp, and Mistral local |
+| `app/core/settings.py` | Pydantic runtime settings for local runtimes, Chroma, Pinecone compatibility, and fallbacks |
 | `policy_ingestion.py` | Project Aegis ingestion engine: markdown chunking, table preservation, metadata extraction, verification, upsert |
-| `app/core/vector_store.py` | OpenAI/Google embeddings, Pinecone vector store, Chroma/hash fallbacks, metadata-filtered retrieval |
-| `app/nodes/retrieval.py` | Query expansion, HyDE-style retrieval, metadata filters, post-filtering, Cohere reranking |
-| `app/core/models.py` | OpenAI or Gemini generation with extractive/Ollama fallback paths |
+| `app/core/vector_store.py` | Embeddings, vector store, Chroma/hash fallbacks, metadata-filtered retrieval |
+| `app/nodes/retrieval.py` | Query expansion, HyDE-style retrieval, metadata filters, post-filtering, reranking |
+| `app/core/models.py` | Local decision manager entrypoint with extractive fallback |
 | `app/graph/workflow.py` | Full LangGraph workflow |
 | `app/nodes/planner.py` | Rule-based grade-aware router |
 | `app/nodes/verifier.py` | Blocking quality gate |
-| `streamlit_app.py` | Primary Streamlit chat UI and execution trace viewer |
+| `streamlit_app.py` | Primary Streamlit chat UI, local runtime controls, and execution trace viewer |
 | `api.py` | FastAPI REST API |
 | `tests/test_all.py` | Core unit tests |
 | `tests/test_vector_wiring.py` | Ingestion/retrieval wiring regression tests |
+| `tests/test_llm_decision_manager.py` | Local LLM orchestration tests |
 
 ## Run Tests
 

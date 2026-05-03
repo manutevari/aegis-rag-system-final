@@ -55,9 +55,9 @@ def _format_answer(raw_answer: str) -> str:
     return result
 
 
-def safe_invoke_llm(messages, model_override=None):
+def safe_invoke_llm(messages, model_override=None, node="generator"):
     try:
-        return invoke_llm(messages, model_override=model_override)
+        return invoke_llm(messages, model_override=model_override, node=node)
     except Exception as exc:
         logger.error("[Local LLM] Error: %s", exc)
         raise
@@ -89,6 +89,7 @@ def run(state: AgentState) -> AgentState:
     history = safe_get(state, "history") or []
     grade = safe_get(state, "employee_grade", "") or ""
     model_override = safe_get(state, "model")
+    model_decision = {"provider": "extractive", "model": "extractive"}
 
     if not _has_policy_documents(state):
         return trace(
@@ -119,7 +120,8 @@ def run(state: AgentState) -> AgentState:
             }
         )
 
-        response = safe_invoke_llm(messages, model_override=model_override)
+        response = safe_invoke_llm(messages, model_override=model_override, node="generator")
+        model_decision = getattr(response, "model_decision", model_decision) or model_decision
         answer = getattr(response, "content", None)
         if not answer:
             try:
@@ -130,7 +132,7 @@ def run(state: AgentState) -> AgentState:
 
     except Exception as exc:
         logger.error("Generation error: %s", exc)
-        answer = "Local generation failed. Please check the local model runtime and try again."
+        answer = "Local generation failed. Please check the configured local model runtime and try again."
 
     sources = re.findall(r"(?:Source|source|CODE|Code):\s*\*?\*?([^\n*]+)\*?\*?", answer)
     sources = [source.strip() for source in sources if source.strip()]
@@ -145,5 +147,5 @@ def run(state: AgentState) -> AgentState:
             retry=False,
         ),
         node="generate",
-        data={"len": len(answer), "model": model_override or "default"},
+        data={"len": len(answer), "model_decision": model_decision},
     )
