@@ -19,7 +19,7 @@ class AppSettings(BaseSettings):
     openai_max_output_tokens: int = Field(default=1024)
     google_api_key: Optional[SecretStr] = Field(
         default=None,
-        validation_alias=AliasChoices("GOOGLE_API_KEY", "GEMINI_API_KEY"),
+        validation_alias=AliasChoices("GEMINI_API_KEY", "GOOGLE_API_KEY"),
     )
     google_model: str = Field(default="gemini-2.5-flash")
     google_temperature: float = Field(default=0.1)
