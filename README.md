@@ -18,8 +18,8 @@ RAG_EMBEDDINGS_PROVIDER=hash VECTOR_BACKEND=chroma LLM_PROVIDER=extractive uvico
 
 AEGIS is configured for this production stack:
 
-- OpenAI `gpt-4o-mini` for grounded answer generation.
-- OpenAI `text-embedding-3-large` for dense embeddings.
+- OpenAI `gpt-4o-mini` or Google Gemini for grounded answer generation.
+- OpenAI `text-embedding-3-large` or Google `gemini-embedding-001` for dense embeddings.
 - Pinecone for metadata-filtered vector storage and retrieval.
 - Cohere `rerank-v3.5` for final context reranking.
 - Pydantic settings in `app/core/settings.py` for typed provider configuration.
@@ -47,6 +47,20 @@ RERANK_PROVIDER=cohere
 COHERE_RERANK_MODEL=rerank-v3.5
 ```
 
+To use a Google API key instead, store the key as `GOOGLE_API_KEY` or `GEMINI_API_KEY` and switch either or both hosted providers:
+
+```bash
+GOOGLE_API_KEY=...
+
+LLM_PROVIDER=google
+GOOGLE_MODEL=gemini-2.5-flash
+GOOGLE_MAX_OUTPUT_TOKENS=1024
+
+RAG_EMBEDDINGS_PROVIDER=google
+GOOGLE_EMBEDDING_MODEL=gemini-embedding-001
+GOOGLE_EMBEDDING_DIMENSIONS=3072
+```
+
 Build and run with the hosted stack:
 
 ```bash
@@ -55,11 +69,11 @@ uvicorn api:app --reload --host 0.0.0.0 --port 8000
 streamlit run streamlit_app.py --server.fileWatcherType none
 ```
 
-If any hosted credential is missing, the app falls back safely: OpenAI generation falls back to extractive local answers, OpenAI embeddings fall back to hash embeddings, and Pinecone falls back to Chroma.
+If any hosted credential is missing, the app falls back safely: OpenAI or Google generation falls back to extractive local answers, hosted embeddings fall back to hash embeddings, and Pinecone falls back to Chroma.
 
 ## Pinecone Index
 
-For `text-embedding-3-large`, create a dense Pinecone index with:
+For `text-embedding-3-large` and `gemini-embedding-001` with the default configuration, create a dense Pinecone index with:
 
 - dimension: `3072`
 - metric: `cosine`
@@ -104,11 +118,11 @@ User query
        -> query expansion
        -> HyDE-style search text
        -> metadata pre-filter
-       -> OpenAI embeddings + Pinecone vector retrieval
+       -> OpenAI/Google embeddings + Pinecone vector retrieval
        -> latest-version post-filter
        -> Cohere rerank top 5
   -> context assembler / token manager
-  -> OpenAI gpt-4o-mini grounded generator
+  -> OpenAI/Gemini grounded generator
   -> confidence and verifier
   -> retry or HITL fallback
   -> trace end
@@ -118,11 +132,11 @@ User query
 
 | File | Purpose |
 |------|---------|
-| `app/core/settings.py` | Pydantic runtime settings for OpenAI, Cohere, Pinecone, Chroma, and local fallbacks |
+| `app/core/settings.py` | Pydantic runtime settings for OpenAI, Google, Cohere, Pinecone, Chroma, and local fallbacks |
 | `policy_ingestion.py` | Project Aegis ingestion engine: markdown chunking, table preservation, metadata extraction, verification, upsert |
-| `app/core/vector_store.py` | OpenAI embeddings, Pinecone vector store, Chroma/hash fallbacks, metadata-filtered retrieval |
+| `app/core/vector_store.py` | OpenAI/Google embeddings, Pinecone vector store, Chroma/hash fallbacks, metadata-filtered retrieval |
 | `app/nodes/retrieval.py` | Query expansion, HyDE-style retrieval, metadata filters, post-filtering, Cohere reranking |
-| `app/core/models.py` | OpenAI `gpt-4o-mini` generation with extractive/Ollama fallback paths |
+| `app/core/models.py` | OpenAI or Gemini generation with extractive/Ollama fallback paths |
 | `app/graph/workflow.py` | Full LangGraph workflow |
 | `app/nodes/planner.py` | Rule-based grade-aware router |
 | `app/nodes/verifier.py` | Blocking quality gate |
