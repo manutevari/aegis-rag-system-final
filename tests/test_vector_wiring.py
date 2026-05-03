@@ -29,7 +29,7 @@ def test_hash_embeddings_are_deterministic_without_network():
 def test_get_embeddings_defaults_to_hash_provider_without_openai_key(monkeypatch):
     import app.core.vector_store as vector_store
 
-    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.setenv("OPENAI_API_KEY", "")
     monkeypatch.delenv("RAG_EMBEDDINGS_PROVIDER", raising=False)
     _clear_settings_cache()
 
