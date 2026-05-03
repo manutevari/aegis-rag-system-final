@@ -16,6 +16,7 @@ for path in [CURRENT_DIR, PARENT_DIR]:
 os.chdir(CURRENT_DIR)
 load_dotenv(os.path.join(CURRENT_DIR, ".env"))
 
+from app.core.runtime_config import apply_runtime_model_config, default_model_for_provider, normalize_provider
 from app.core.stability_patch import safe_invoke
 from app.graph.workflow import build_graph
 from app.memory.memory_manager import MemoryManager
@@ -41,13 +42,6 @@ def load_graph():
     return build_graph()
 
 
-index_error = None
-try:
-    indexed_chunks = ensure_policy_index()
-except Exception as exc:
-    indexed_chunks = 0
-    index_error = str(exc)
-
 if "messages" not in st.session_state:
     st.session_state.messages = []
 if "cache" not in st.session_state:
@@ -57,11 +51,56 @@ if "memory" not in st.session_state:
 if "traces" not in st.session_state:
     st.session_state.traces = []
 
+_PROVIDER_LABELS = ["Gemini", "OpenAI", "Extractive"]
+_PROVIDER_VALUES = {"Gemini": "gemini", "OpenAI": "openai", "Extractive": "extractive"}
+_PROVIDER_INDEX = {"gemini": 0, "openai": 1, "extractive": 2}
+
+initial_provider = normalize_provider(os.getenv("LLM_PROVIDER") or os.getenv("MODEL_PROVIDER") or "gemini")
+runtime_model_config = {"provider": initial_provider, "model": default_model_for_provider(initial_provider)}
+
 with st.sidebar:
     st.title("🛡️ AEGIS Control")
     st.markdown("---")
+
+    provider_label = st.selectbox(
+        "Model Provider",
+        _PROVIDER_LABELS,
+        index=_PROVIDER_INDEX.get(initial_provider, 0),
+    )
+    runtime_provider = _PROVIDER_VALUES[provider_label]
+    runtime_model = ""
+    runtime_api_key = ""
+
+    if runtime_provider != "extractive":
+        model_env_name = "GOOGLE_MODEL" if runtime_provider == "gemini" else "OPENAI_MODEL"
+        key_label = "Gemini API Key" if runtime_provider == "gemini" else "OpenAI API Key"
+        runtime_model = st.text_input(
+            "Model",
+            value=os.getenv(model_env_name) or default_model_for_provider(runtime_provider),
+            key=f"runtime_model_{runtime_provider}",
+        )
+        runtime_api_key = st.text_input(
+            key_label,
+            type="password",
+            placeholder=f"Paste {key_label}",
+            key=f"runtime_api_key_{runtime_provider}",
+        )
+
+    runtime_model_config = apply_runtime_model_config(
+        runtime_provider,
+        api_key=runtime_api_key,
+        model=runtime_model,
+    )
+
     use_cache = st.toggle("Enable Secure Cache", True)
     debug_mode = st.toggle("Show System Trace", True)
+
+    index_error = None
+    try:
+        indexed_chunks = ensure_policy_index()
+    except Exception as exc:
+        indexed_chunks = 0
+        index_error = str(exc)
 
     st.caption(f"Policy chunks indexed: {indexed_chunks}")
     if index_error:
@@ -95,7 +134,9 @@ if query:
     with st.chat_message("assistant"):
         with st.spinner("Analyzing Knowledge Base..."):
             try:
-                cache_key = f"{grade_override}_{query}"
+                runtime_provider = str(runtime_model_config.get("provider") or "default")
+                runtime_model = str(runtime_model_config.get("model") or "default")
+                cache_key = f"{grade_override}_{runtime_provider}_{runtime_model}_{query}"
                 cached = st.session_state.cache.get(cache_key) if use_cache else None
 
                 if cached:
@@ -115,6 +156,7 @@ if query:
                             "history": st.session_state.messages[-6:],
                             "trace_log": [],
                             "employee_grade": grade_override,
+                            "model": None if runtime_provider == "extractive" else runtime_model,
                         },
                     )
 
