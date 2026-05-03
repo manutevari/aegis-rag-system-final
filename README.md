@@ -47,16 +47,16 @@ RERANK_PROVIDER=cohere
 COHERE_RERANK_MODEL=rerank-v3.5
 ```
 
-To use a Google API key instead, store the key as `GOOGLE_API_KEY` or `GEMINI_API_KEY` and switch either or both hosted providers:
+To use a Gemini API key instead, store the key as `GEMINI_API_KEY` and switch either or both hosted providers. `GOOGLE_API_KEY` remains supported as a fallback alias.
 
 ```bash
-GOOGLE_API_KEY=...
+GEMINI_API_KEY=...
 
-LLM_PROVIDER=google
+LLM_PROVIDER=gemini
 GOOGLE_MODEL=gemini-2.5-flash
 GOOGLE_MAX_OUTPUT_TOKENS=1024
 
-RAG_EMBEDDINGS_PROVIDER=google
+RAG_EMBEDDINGS_PROVIDER=gemini
 GOOGLE_EMBEDDING_MODEL=gemini-embedding-001
 GOOGLE_EMBEDDING_DIMENSIONS=3072
 ```
