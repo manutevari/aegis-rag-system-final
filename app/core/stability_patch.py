@@ -101,6 +101,10 @@ def _sanitize_state(state: Any) -> Dict[str, Any]:
         "intent": raw.get("intent") or "rag",
     }
 
+    model = raw.get("model")
+    if isinstance(model, str) and model.strip():
+        sanitized["model"] = model.strip()
+
     if not isinstance(sanitized["history"], list):
         sanitized["history"] = []
 
