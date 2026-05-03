@@ -244,7 +244,7 @@ def get_llm(model_override: Optional[str] = None, temperature: Optional[float] =
 
     if provider in _GOOGLE_PROVIDERS:
         if not settings.google_key:
-            logger.warning("GOOGLE_API_KEY or GEMINI_API_KEY is not set; using extractive fallback")
+            logger.warning("GEMINI_API_KEY or GOOGLE_API_KEY is not set; using extractive fallback")
             return LocalPolicyModel()
         return GooglePolicyModel(
             model=model_override or settings.google_model,
