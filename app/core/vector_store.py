@@ -1,15 +1,18 @@
 """
 Shared vector store factory for ingestion and retrieval.
 
-AEGIS uses OpenAI text-embedding-3-large and Pinecone when credentials are
-configured, with Chroma/hash fallbacks for local development and CI.
+AEGIS uses hosted embeddings and Pinecone when credentials are configured,
+with Chroma/hash fallbacks for local development and CI.
 """
 
 import hashlib
+import json
 import logging
 import math
 import os
 import re
+import urllib.parse
+import urllib.request
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional
 
@@ -24,6 +27,8 @@ DEFAULT_DB_PATH = "db"
 DEFAULT_COLLECTION_NAME = "aegis_policies"
 DEFAULT_LOCAL_EMBED_MODEL = "sentence-transformers/all-MiniLM-L6-v2"
 DEFAULT_HASH_DIMENSIONS = 384
+
+_GOOGLE_EMBEDDING_PROVIDERS = {"google", "gemini", "google-gemini"}
 
 _vectorstore = None
 
@@ -95,6 +100,58 @@ class OpenAIEmbeddingModel(Embeddings):
         return self.embed_documents([text])[0]
 
 
+class GoogleEmbeddingModel(Embeddings):
+    """LangChain-compatible Gemini embedding adapter using the REST API."""
+
+    def __init__(self, settings: Optional[AppSettings] = None):
+        self.settings = settings or get_settings()
+        if not self.settings.google_key:
+            raise ValueError("GOOGLE_API_KEY or GEMINI_API_KEY is required for Google embeddings")
+
+    def _model_path(self) -> str:
+        model = (self.settings.google_embedding_model or "gemini-embedding-001").strip().strip("/")
+        if model.startswith("models/"):
+            return model
+        return f"models/{model}"
+
+    def _api_url(self, action: str) -> str:
+        model_path = urllib.parse.quote(self._model_path(), safe="/")
+        return f"https://generativelanguage.googleapis.com/v1beta/{model_path}:{action}"
+
+    def _embed_content(self, text: str, task_type: str) -> List[float]:
+        payload: Dict[str, Any] = {
+            "content": {"parts": [{"text": text or ""}]},
+            "taskType": task_type,
+        }
+        if self.settings.google_embedding_dimensions > 0:
+            payload["output_dimensionality"] = self.settings.google_embedding_dimensions
+
+        request = urllib.request.Request(
+            self._api_url("embedContent"),
+            data=json.dumps(payload).encode("utf-8"),
+            headers={
+                "Content-Type": "application/json",
+                "User-Agent": "aegis-rag-system",
+                "x-goog-api-key": self.settings.google_key,
+            },
+            method="POST",
+        )
+        with urllib.request.urlopen(request, timeout=30) as response:
+            data = json.loads(response.read().decode("utf-8"))
+
+        embedding = data.get("embedding") or {}
+        values = embedding.get("values") or embedding.get("value")
+        if values is None:
+            raise ValueError(f"Google embedding response did not include values: {data}")
+        return [float(value) for value in values]
+
+    def embed_documents(self, texts: List[str]) -> List[List[float]]:
+        return [self._embed_content(text, "RETRIEVAL_DOCUMENT") for text in texts]
+
+    def embed_query(self, text: str) -> List[float]:
+        return self._embed_content(text, "RETRIEVAL_QUERY")
+
+
 def get_db_path() -> str:
     settings = get_settings()
     return settings.chroma_dir or os.getenv("VECTOR_DB_PATH") or DEFAULT_DB_PATH
@@ -123,7 +180,7 @@ def _huggingface_embeddings():
 
 def get_embeddings() -> Embeddings:
     settings = get_settings()
-    provider = settings.rag_embeddings_provider.strip().lower()
+    provider = settings.active_embeddings_provider
 
     if provider == "openai":
         if not settings.openai_key:
@@ -134,6 +191,17 @@ def get_embeddings() -> Embeddings:
             return OpenAIEmbeddingModel(settings=settings)
         except Exception as exc:
             logger.warning("OpenAI embeddings unavailable; using hash embeddings: %s", exc)
+            return LocalHashEmbeddings()
+
+    if provider in _GOOGLE_EMBEDDING_PROVIDERS:
+        if not settings.google_key:
+            logger.warning("GOOGLE_API_KEY or GEMINI_API_KEY is not set; using hash embeddings")
+            return LocalHashEmbeddings()
+        try:
+            logger.info("Using Google embeddings model %s", settings.google_embedding_model)
+            return GoogleEmbeddingModel(settings=settings)
+        except Exception as exc:
+            logger.warning("Google embeddings unavailable; using hash embeddings: %s", exc)
             return LocalHashEmbeddings()
 
     if provider in {"hash", "local_hash", "offline"}:
@@ -191,6 +259,15 @@ def _pinecone_index_names(indexes: Any) -> set:
     return {item.get("name") if isinstance(item, dict) else getattr(item, "name", None) for item in indexes}
 
 
+def _pinecone_embedding_credentials_ready(settings: AppSettings) -> bool:
+    provider = settings.active_embeddings_provider
+    if provider == "openai":
+        return bool(settings.openai_key)
+    if provider in _GOOGLE_EMBEDDING_PROVIDERS:
+        return bool(settings.google_key)
+    return True
+
+
 class PineconePolicyRetriever:
     def __init__(self, store: "PineconePolicyStore", search_kwargs: Optional[Dict[str, Any]] = None):
         self.store = store
@@ -229,7 +306,7 @@ class PineconePolicyStore:
             if self.settings.pinecone_index_name not in existing:
                 pc.create_index(
                     name=self.settings.pinecone_index_name,
-                    dimension=self.settings.openai_embedding_dimensions,
+                    dimension=self.settings.active_embedding_dimensions,
                     metric=self.settings.pinecone_metric,
                     spec=ServerlessSpec(
                         cloud=self.settings.pinecone_cloud,
@@ -320,7 +397,7 @@ def get_vectorstore():
 
     settings = get_settings()
     if settings.use_pinecone:
-        if settings.pinecone_key and settings.openai_key:
+        if settings.pinecone_key and _pinecone_embedding_credentials_ready(settings):
             try:
                 _vectorstore = PineconePolicyStore(settings=settings, embeddings=get_embeddings())
                 logger.info("Pinecone vector store ready: index=%s namespace=%s", settings.pinecone_index_name, settings.pinecone_namespace)
@@ -328,7 +405,7 @@ def get_vectorstore():
             except Exception as exc:
                 logger.warning("Pinecone unavailable; falling back to Chroma: %s", exc)
         else:
-            logger.warning("Pinecone/OpenAI credentials are not fully configured; falling back to Chroma")
+            logger.warning("Pinecone/embedding credentials are not fully configured; falling back to Chroma")
 
     _vectorstore = _get_chroma_store()
     logger.info(
