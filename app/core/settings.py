@@ -3,7 +3,7 @@
 from functools import lru_cache
 from typing import Optional
 
-from pydantic import Field, SecretStr
+from pydantic import AliasChoices, Field, SecretStr
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -17,11 +17,20 @@ class AppSettings(BaseSettings):
     openai_model: str = Field(default="gpt-4o-mini")
     openai_temperature: float = Field(default=0.1)
     openai_max_output_tokens: int = Field(default=1024)
+    google_api_key: Optional[SecretStr] = Field(
+        default=None,
+        validation_alias=AliasChoices("GOOGLE_API_KEY", "GEMINI_API_KEY"),
+    )
+    google_model: str = Field(default="gemini-2.5-flash")
+    google_temperature: float = Field(default=0.1)
+    google_max_output_tokens: int = Field(default=1024)
 
     # Embeddings
     rag_embeddings_provider: str = Field(default="openai")
     openai_embedding_model: str = Field(default="text-embedding-3-large")
     openai_embedding_dimensions: int = Field(default=3072)
+    google_embedding_model: str = Field(default="gemini-embedding-001")
+    google_embedding_dimensions: int = Field(default=3072)
     local_hash_embed_dim: int = Field(default=384)
     local_embed_model: str = Field(default="sentence-transformers/all-MiniLM-L6-v2")
     allow_hf_downloads: bool = Field(default=False)
@@ -59,8 +68,25 @@ class AppSettings(BaseSettings):
         return (self.model_provider or self.llm_provider or "openai").strip().lower()
 
     @property
+    def active_embeddings_provider(self) -> str:
+        return (self.rag_embeddings_provider or "openai").strip().lower()
+
+    @property
+    def active_embedding_dimensions(self) -> int:
+        provider = self.active_embeddings_provider
+        if provider in {"google", "gemini", "google-gemini"}:
+            return self.google_embedding_dimensions
+        if provider == "openai":
+            return self.openai_embedding_dimensions
+        return self.local_hash_embed_dim
+
+    @property
     def openai_key(self) -> Optional[str]:
         return self.openai_api_key.get_secret_value() if self.openai_api_key else None
+
+    @property
+    def google_key(self) -> Optional[str]:
+        return self.google_api_key.get_secret_value() if self.google_api_key else None
 
     @property
     def cohere_key(self) -> Optional[str]:
