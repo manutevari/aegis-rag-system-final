@@ -49,6 +49,18 @@ def test_get_embeddings_can_force_hash_provider(monkeypatch):
     assert isinstance(embeddings, vector_store.LocalHashEmbeddings)
 
 
+def test_get_embeddings_can_use_google_provider(monkeypatch):
+    import app.core.vector_store as vector_store
+
+    monkeypatch.setenv("RAG_EMBEDDINGS_PROVIDER", "google")
+    monkeypatch.setenv("GOOGLE_API_KEY", "test-google-key")
+    _clear_settings_cache()
+
+    embeddings = vector_store.get_embeddings()
+
+    assert isinstance(embeddings, vector_store.GoogleEmbeddingModel)
+
+
 def test_local_embeddings_fall_back_to_hash_when_model_unavailable(monkeypatch):
     import app.core.vector_store as vector_store
 
