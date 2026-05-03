@@ -38,6 +38,7 @@ class AgentState(BaseModel):
     compute_summary: str = ""
 
     # Generation
+    model: Optional[str] = None
     answer: str = ""
     raw_answer: str = ""
 

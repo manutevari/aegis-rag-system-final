@@ -106,7 +106,7 @@ class GoogleEmbeddingModel(Embeddings):
     def __init__(self, settings: Optional[AppSettings] = None):
         self.settings = settings or get_settings()
         if not self.settings.google_key:
-            raise ValueError("GOOGLE_API_KEY or GEMINI_API_KEY is required for Google embeddings")
+            raise ValueError("GEMINI_API_KEY or GOOGLE_API_KEY is required for Google embeddings")
 
     def _model_path(self) -> str:
         model = (self.settings.google_embedding_model or "gemini-embedding-001").strip().strip("/")
@@ -195,7 +195,7 @@ def get_embeddings() -> Embeddings:
 
     if provider in _GOOGLE_EMBEDDING_PROVIDERS:
         if not settings.google_key:
-            logger.warning("GOOGLE_API_KEY or GEMINI_API_KEY is not set; using hash embeddings")
+            logger.warning("GEMINI_API_KEY or GOOGLE_API_KEY is not set; using hash embeddings")
             return LocalHashEmbeddings()
         try:
             logger.info("Using Google embeddings model %s", settings.google_embedding_model)

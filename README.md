@@ -42,6 +42,19 @@ MISTRAL_LOCAL_BASE_URL=http://localhost:8000/v1
 MISTRAL_LOCAL_MODEL=mistral
 ```
 
+To use a Gemini API key instead, store the key as `GEMINI_API_KEY` and switch either or both hosted providers. `GOOGLE_API_KEY` remains supported as a fallback alias.
+
+```bash
+GEMINI_API_KEY=...
+
+LLM_PROVIDER=gemini
+GOOGLE_MODEL=gemini-2.5-flash
+GOOGLE_MAX_OUTPUT_TOKENS=1024
+
+RAG_EMBEDDINGS_PROVIDER=gemini
+GOOGLE_EMBEDDING_MODEL=gemini-embedding-001
+GOOGLE_EMBEDDING_DIMENSIONS=3072
+```
 You can force one runtime by setting `LLM_PROVIDER=ollama`, `LLM_PROVIDER=llama_cpp`, `LLM_PROVIDER=mistral_local`, or `LLM_PROVIDER=extractive`.
 
 The decision manager is node-aware: orchestration-style nodes use `LOCAL_ORCHESTRATION_MODEL`, summarization uses `LOCAL_SUMMARY_MODEL`, and grounded answer generation uses `LOCAL_GENERATION_MODEL` unless a node passes an explicit model override.

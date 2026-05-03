@@ -33,6 +33,12 @@ def test_explicit_extractive_provider_uses_local_model(monkeypatch):
     assert isinstance(llm, models.LocalPolicyModel)
 
 
+def test_gemini_provider_falls_back_without_api_key(monkeypatch):
+    import app.core.models as models
+
+    monkeypatch.setenv("LLM_PROVIDER", "gemini")
+    monkeypatch.setenv("GEMINI_API_KEY", "")
+    monkeypatch.setenv("GOOGLE_API_KEY", "")
 def test_hosted_provider_is_skipped_even_with_api_key(monkeypatch):
     import app.core.models as models
 
@@ -45,6 +51,15 @@ def test_hosted_provider_is_skipped_even_with_api_key(monkeypatch):
     assert isinstance(llm, models.LocalPolicyModel)
 
 
+def test_gemini_provider_uses_gemini_api_key(monkeypatch):
+    import app.core.models as models
+
+    monkeypatch.setenv("LLM_PROVIDER", "gemini")
+    monkeypatch.setenv("GEMINI_API_KEY", "test-gemini-key")
+    monkeypatch.delenv("GOOGLE_API_KEY", raising=False)
+    _clear_settings_cache()
+
+    llm = models.get_llm()
 def test_ollama_provider_uses_decision_manager_selection(monkeypatch):
     import app.core.models as models
 

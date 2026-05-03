@@ -79,9 +79,48 @@ def get_llm(
         logger.info("Using extractive local model provider")
         return LocalPolicyModel()
 
-    if provider not in _LOCAL_PROVIDERS:
-        logger.warning("Skipping unsupported hosted LLM_PROVIDER=%s; using local-only policy", provider)
-        return LocalPolicyModel()
+    if provider in _OPENAI_PROVIDERS:
+        if not settings.openai_key:
+            logger.warning("OPENAI_API_KEY is not set; using extractive fallback")
+            return LocalPolicyModel()
+        return OpenAIPolicyModel(
+            model=model_override or settings.openai_model,
+            api_key=settings.openai_key,
+            temperature=settings.openai_temperature if temperature is None else temperature,
+            max_tokens=max_tokens or settings.openai_max_output_tokens,
+        )
+
+    if provider in _GOOGLE_PROVIDERS:
+        if not settings.google_key:
+            logger.warning("GEMINI_API_KEY or GOOGLE_API_KEY is not set; using extractive fallback")
+            return LocalPolicyModel()
+        return GooglePolicyModel(
+            model=model_override or settings.google_model,
+            api_key=settings.google_key,
+            temperature=settings.google_temperature if temperature is None else temperature,
+            max_tokens=max_tokens or settings.google_max_output_tokens,
+        )
+
+    if provider in _OLLAMA_PROVIDERS:
+        base_url = _ollama_base_url()
+        if not _ollama_server_available(base_url):
+            return LocalPolicyModel()
+
+        model = model_override or settings.ollama_model
+        try:
+            from langchain_community.llms import Ollama
+
+            kwargs = {"model": model, "temperature": temperature if temperature is not None else 0.0, "base_url": base_url}
+            if max_tokens is not None:
+                kwargs["num_predict"] = max_tokens
+            return Ollama(**kwargs)
+        except Exception as exc:
+            logger.warning("Local LLM unavailable, using extractive fallback: %s", exc)
+            return LocalPolicyModel()
+
+    logger.warning("Unknown LLM_PROVIDER=%s; using extractive fallback", provider)
+    return LocalPolicyModel()
+
 
     llm, decision = select_local_llm(
         node=node,
