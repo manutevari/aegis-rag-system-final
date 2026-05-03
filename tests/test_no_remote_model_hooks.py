@@ -1,11 +1,11 @@
 def test_hosted_provider_defaults_are_explicit(monkeypatch):
     from app.core.settings import get_settings
 
-    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
-    monkeypatch.delenv("GOOGLE_API_KEY", raising=False)
-    monkeypatch.delenv("GEMINI_API_KEY", raising=False)
-    monkeypatch.delenv("COHERE_API_KEY", raising=False)
-    monkeypatch.delenv("PINECONE_API_KEY", raising=False)
+    monkeypatch.setenv("OPENAI_API_KEY", "")
+    monkeypatch.setenv("GOOGLE_API_KEY", "")
+    monkeypatch.setenv("GEMINI_API_KEY", "")
+    monkeypatch.setenv("COHERE_API_KEY", "")
+    monkeypatch.setenv("PINECONE_API_KEY", "")
     get_settings.cache_clear()
 
     settings = get_settings()
@@ -25,7 +25,7 @@ def test_missing_hosted_keys_keep_safe_fallbacks(monkeypatch):
     from app.core.settings import get_settings
     from app.core.vector_store import LocalHashEmbeddings, get_embeddings
 
-    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.setenv("OPENAI_API_KEY", "")
     monkeypatch.setenv("RAG_EMBEDDINGS_PROVIDER", "openai")
     get_settings.cache_clear()
 
