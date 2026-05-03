@@ -7,7 +7,7 @@ def _clear_settings_cache():
 def test_default_openai_llm_falls_back_without_api_key(monkeypatch):
     import app.core.models as models
 
-    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.setenv("OPENAI_API_KEY", "")
     monkeypatch.delenv("MODEL_PROVIDER", raising=False)
     monkeypatch.delenv("LLM_PROVIDER", raising=False)
     _clear_settings_cache()
