@@ -1,7 +1,9 @@
 """Model helpers for AEGIS generation."""
 
+import json
 import logging
 import re
+import urllib.parse
 import urllib.request
 from types import SimpleNamespace
 from typing import Optional
@@ -12,14 +14,18 @@ logger = logging.getLogger(__name__)
 
 _OFFLINE_PROVIDERS = {"extractive", "offline", "local", "none", "false", "0"}
 _OPENAI_PROVIDERS = {"openai", "gpt", "gpt-4o-mini"}
+_GOOGLE_PROVIDERS = {"google", "gemini", "google-gemini"}
 _OLLAMA_PROVIDERS = {"ollama", "auto"}
 
 
 def get_embed_model() -> str:
     """Return the configured embedding model name."""
     settings = get_settings()
-    if settings.rag_embeddings_provider.strip().lower() == "openai":
+    provider = settings.rag_embeddings_provider.strip().lower()
+    if provider == "openai":
         return settings.openai_embedding_model
+    if provider in _GOOGLE_PROVIDERS:
+        return settings.google_embedding_model
     return settings.local_embed_model
 
 
@@ -60,6 +66,48 @@ class OpenAIPolicyModel:
         return SimpleNamespace(content=content)
 
 
+class GooglePolicyModel:
+    """Gemini REST API adapter returning a LangChain-like response object."""
+
+    def __init__(self, model: str, api_key: str, temperature: float = 0.1, max_tokens: Optional[int] = None):
+        self.model = model
+        self.api_key = api_key
+        self.temperature = temperature
+        self.max_tokens = max_tokens
+
+    def invoke(self, messages):
+        prompt = _messages_to_prompt(messages)
+        payload = {
+            "contents": [
+                {
+                    "role": "user",
+                    "parts": [{"text": prompt}],
+                }
+            ]
+        }
+        generation_config = {}
+        if self.temperature is not None:
+            generation_config["temperature"] = self.temperature
+        if self.max_tokens:
+            generation_config["maxOutputTokens"] = self.max_tokens
+        if generation_config:
+            payload["generationConfig"] = generation_config
+
+        request = urllib.request.Request(
+            _google_api_url(self.model, "generateContent"),
+            data=json.dumps(payload).encode("utf-8"),
+            headers={
+                "Content-Type": "application/json",
+                "User-Agent": "aegis-rag-system",
+                "x-goog-api-key": self.api_key,
+            },
+            method="POST",
+        )
+        with urllib.request.urlopen(request, timeout=30) as response:
+            data = json.loads(response.read().decode("utf-8"))
+        return SimpleNamespace(content=_google_response_text(data))
+
+
 def _messages_to_prompt(messages) -> str:
     if isinstance(messages, str):
         return messages
@@ -87,6 +135,37 @@ def _openai_response_text(response) -> str:
             part_text = getattr(part, "text", None)
             if part_text:
                 return part_text
+
+    return str(response)
+
+
+def _google_model_path(model: str) -> str:
+    model = (model or "gemini-2.5-flash").strip().strip("/")
+    if model.startswith("models/"):
+        return model
+    return f"models/{model}"
+
+
+def _google_api_url(model: str, action: str) -> str:
+    model_path = urllib.parse.quote(_google_model_path(model), safe="/")
+    return f"https://generativelanguage.googleapis.com/v1beta/{model_path}:{action}"
+
+
+def _google_response_text(response: dict) -> str:
+    texts = []
+    for candidate in response.get("candidates", []) or []:
+        content = candidate.get("content", {}) or {}
+        for part in content.get("parts", []) or []:
+            text = part.get("text")
+            if text:
+                texts.append(text)
+
+    if texts:
+        return "\n".join(texts)
+
+    block_reason = (response.get("promptFeedback") or {}).get("blockReason")
+    if block_reason:
+        return f"Gemini blocked the response: {block_reason}"
 
     return str(response)
 
@@ -161,6 +240,17 @@ def get_llm(model_override: Optional[str] = None, temperature: Optional[float] =
             api_key=settings.openai_key,
             temperature=settings.openai_temperature if temperature is None else temperature,
             max_tokens=max_tokens or settings.openai_max_output_tokens,
+        )
+
+    if provider in _GOOGLE_PROVIDERS:
+        if not settings.google_key:
+            logger.warning("GOOGLE_API_KEY or GEMINI_API_KEY is not set; using extractive fallback")
+            return LocalPolicyModel()
+        return GooglePolicyModel(
+            model=model_override or settings.google_model,
+            api_key=settings.google_key,
+            temperature=settings.google_temperature if temperature is None else temperature,
+            max_tokens=max_tokens or settings.google_max_output_tokens,
         )
 
     if provider in _OLLAMA_PROVIDERS:
