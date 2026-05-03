@@ -1,6 +1,10 @@
-def test_hosted_provider_defaults_are_explicit(monkeypatch):
+def test_local_provider_defaults_are_explicit(monkeypatch):
     from app.core.settings import get_settings
 
+    monkeypatch.setenv("LLM_PROVIDER", "local_auto")
+    monkeypatch.setenv("RAG_EMBEDDINGS_PROVIDER", "hash")
+    monkeypatch.setenv("VECTOR_BACKEND", "chroma")
+    monkeypatch.setenv("RERANK_PROVIDER", "local")
     monkeypatch.setenv("OPENAI_API_KEY", "")
     monkeypatch.setenv("GOOGLE_API_KEY", "")
     monkeypatch.setenv("GEMINI_API_KEY", "")
@@ -10,18 +14,19 @@ def test_hosted_provider_defaults_are_explicit(monkeypatch):
 
     settings = get_settings()
 
-    assert settings.openai_model == "gpt-4o-mini"
-    assert settings.google_model == "gemini-2.5-flash"
-    assert settings.openai_embedding_model == "text-embedding-3-large"
-    assert settings.openai_embedding_dimensions == 3072
-    assert settings.google_embedding_model == "gemini-embedding-001"
-    assert settings.google_embedding_dimensions == 3072
-    assert settings.rerank_provider == "cohere"
-    assert settings.cohere_rerank_model == "rerank-v3.5"
-    assert settings.vector_backend == "pinecone"
+    assert settings.active_llm_provider == "local_auto"
+    assert settings.local_llm_order == "ollama,llama_cpp,mistral_local"
+    assert settings.local_orchestration_model == "llama3.1"
+    assert settings.local_generation_model == "mistral"
+    assert settings.ollama_model == "mistral"
+    assert settings.llama_cpp_model == "local-model"
+    assert settings.mistral_local_model == "mistral"
+    assert settings.rag_embeddings_provider == "hash"
+    assert settings.vector_backend == "chroma"
+    assert settings.rerank_provider == "local"
 
 
-def test_missing_hosted_keys_keep_safe_fallbacks(monkeypatch):
+def test_missing_hosted_keys_keep_safe_embedding_fallbacks(monkeypatch):
     from app.core.settings import get_settings
     from app.core.vector_store import LocalHashEmbeddings, get_embeddings
 

@@ -1,173 +1,39 @@
 """Model helpers for AEGIS generation."""
 
-import json
 import logging
 import re
-import urllib.parse
-import urllib.request
 from types import SimpleNamespace
 from typing import Optional
 
+from app.core.llm_decision_manager import LOCAL_PROVIDERS, messages_to_prompt, select_local_llm
 from app.core.settings import get_settings
 
 logger = logging.getLogger(__name__)
 
 _OFFLINE_PROVIDERS = {"extractive", "offline", "local", "none", "false", "0"}
-_OPENAI_PROVIDERS = {"openai", "gpt", "gpt-4o-mini"}
-_GOOGLE_PROVIDERS = {"google", "gemini", "google-gemini"}
-_OLLAMA_PROVIDERS = {"ollama", "auto"}
+_LOCAL_PROVIDERS = LOCAL_PROVIDERS | {"local_auto"}
 
 
 def get_embed_model() -> str:
     """Return the configured embedding model name."""
     settings = get_settings()
-    provider = settings.rag_embeddings_provider.strip().lower()
+    provider = settings.active_embeddings_provider
     if provider == "openai":
         return settings.openai_embedding_model
-    if provider in _GOOGLE_PROVIDERS:
+    if provider in {"google", "gemini", "google-gemini"}:
         return settings.google_embedding_model
     return settings.local_embed_model
 
 
 class LocalPolicyModel:
-    """Small extractive fallback used when no hosted or local LLM is available."""
+    """Small extractive fallback used when no local LLM runtime is available."""
+
+    decision = {"provider": "extractive", "model": "extractive"}
 
     def invoke(self, messages):
-        prompt = _messages_to_prompt(messages)
+        prompt = messages_to_prompt(messages)
         content = _extractive_answer(prompt)
-        return SimpleNamespace(content=content)
-
-
-class OpenAIPolicyModel:
-    """OpenAI Responses API adapter returning a LangChain-like response object."""
-
-    def __init__(self, model: str, api_key: str, temperature: float = 0.1, max_tokens: Optional[int] = None):
-        self.model = model
-        self.api_key = api_key
-        self.temperature = temperature
-        self.max_tokens = max_tokens
-
-    def invoke(self, messages):
-        from openai import OpenAI
-
-        prompt = _messages_to_prompt(messages)
-        client = OpenAI(api_key=self.api_key)
-        kwargs = {
-            "model": self.model,
-            "input": prompt,
-        }
-        if self.max_tokens:
-            kwargs["max_output_tokens"] = self.max_tokens
-        if self.temperature is not None:
-            kwargs["temperature"] = self.temperature
-
-        response = client.responses.create(**kwargs)
-        content = _openai_response_text(response)
-        return SimpleNamespace(content=content)
-
-
-class GooglePolicyModel:
-    """Gemini REST API adapter returning a LangChain-like response object."""
-
-    def __init__(self, model: str, api_key: str, temperature: float = 0.1, max_tokens: Optional[int] = None):
-        self.model = model
-        self.api_key = api_key
-        self.temperature = temperature
-        self.max_tokens = max_tokens
-
-    def invoke(self, messages):
-        prompt = _messages_to_prompt(messages)
-        payload = {
-            "contents": [
-                {
-                    "role": "user",
-                    "parts": [{"text": prompt}],
-                }
-            ]
-        }
-        generation_config = {}
-        if self.temperature is not None:
-            generation_config["temperature"] = self.temperature
-        if self.max_tokens:
-            generation_config["maxOutputTokens"] = self.max_tokens
-        if generation_config:
-            payload["generationConfig"] = generation_config
-
-        request = urllib.request.Request(
-            _google_api_url(self.model, "generateContent"),
-            data=json.dumps(payload).encode("utf-8"),
-            headers={
-                "Content-Type": "application/json",
-                "User-Agent": "aegis-rag-system",
-                "x-goog-api-key": self.api_key,
-            },
-            method="POST",
-        )
-        with urllib.request.urlopen(request, timeout=30) as response:
-            data = json.loads(response.read().decode("utf-8"))
-        return SimpleNamespace(content=_google_response_text(data))
-
-
-def _messages_to_prompt(messages) -> str:
-    if isinstance(messages, str):
-        return messages
-
-    parts = []
-    for message in messages or []:
-        if isinstance(message, dict):
-            role = message.get("role", "user")
-            content = message.get("content", "")
-            parts.append(f"{role}: {content}")
-        else:
-            parts.append(str(getattr(message, "content", message)))
-    return "\n\n".join(parts)
-
-
-def _openai_response_text(response) -> str:
-    text = getattr(response, "output_text", None)
-    if text:
-        return text
-
-    output = getattr(response, "output", None) or []
-    for item in output:
-        content = getattr(item, "content", None) or []
-        for part in content:
-            part_text = getattr(part, "text", None)
-            if part_text:
-                return part_text
-
-    return str(response)
-
-
-def _google_model_path(model: str) -> str:
-    model = (model or "gemini-2.5-flash").strip().strip("/")
-    if model.startswith("models/"):
-        return model
-    return f"models/{model}"
-
-
-def _google_api_url(model: str, action: str) -> str:
-    model_path = urllib.parse.quote(_google_model_path(model), safe="/")
-    return f"https://generativelanguage.googleapis.com/v1beta/{model_path}:{action}"
-
-
-def _google_response_text(response: dict) -> str:
-    texts = []
-    for candidate in response.get("candidates", []) or []:
-        content = candidate.get("content", {}) or {}
-        for part in content.get("parts", []) or []:
-            text = part.get("text")
-            if text:
-                texts.append(text)
-
-    if texts:
-        return "\n".join(texts)
-
-    block_reason = (response.get("promptFeedback") or {}).get("blockReason")
-    if block_reason:
-        return f"Gemini blocked the response: {block_reason}"
-
-    return str(response)
+        return SimpleNamespace(content=content, model_provider="extractive", model_name="extractive", model_decision=self.decision)
 
 
 def _extractive_answer(prompt: str) -> str:
@@ -199,31 +65,13 @@ def _extractive_answer(prompt: str) -> str:
     return "\n".join(f"- {line}" for line in selected)
 
 
-def _ollama_base_url() -> str:
-    settings = get_settings()
-    base_url = settings.ollama_host or settings.ollama_base_url or "http://localhost:11434"
-    base_url = base_url.strip().rstrip("/")
-    if "://" not in base_url:
-        base_url = f"http://{base_url}"
-    return base_url
-
-
-def _ollama_server_available(base_url: str) -> bool:
-    settings = get_settings()
-    request = urllib.request.Request(
-        f"{base_url.rstrip('/')}/api/tags",
-        headers={"User-Agent": "aegis-rag-system"},
-    )
-    try:
-        with urllib.request.urlopen(request, timeout=settings.ollama_health_timeout) as response:
-            return 200 <= int(response.status) < 500
-    except Exception as exc:
-        logger.warning("Ollama is not reachable at %s; using extractive fallback: %s", base_url, exc)
-        return False
-
-
-def get_llm(model_override: Optional[str] = None, temperature: Optional[float] = None, max_tokens: Optional[int] = None):
-    """Return the configured model with safe fallbacks when credentials are absent."""
+def get_llm(
+    model_override: Optional[str] = None,
+    temperature: Optional[float] = None,
+    max_tokens: Optional[int] = None,
+    node: str = "generator",
+):
+    """Return a local-only model adapter with safe extractive fallback."""
     settings = get_settings()
     provider = settings.active_llm_provider
 
@@ -231,54 +79,41 @@ def get_llm(model_override: Optional[str] = None, temperature: Optional[float] =
         logger.info("Using extractive local model provider")
         return LocalPolicyModel()
 
-    if provider in _OPENAI_PROVIDERS:
-        if not settings.openai_key:
-            logger.warning("OPENAI_API_KEY is not set; using extractive fallback")
-            return LocalPolicyModel()
-        return OpenAIPolicyModel(
-            model=model_override or settings.openai_model,
-            api_key=settings.openai_key,
-            temperature=settings.openai_temperature if temperature is None else temperature,
-            max_tokens=max_tokens or settings.openai_max_output_tokens,
-        )
+    if provider not in _LOCAL_PROVIDERS:
+        logger.warning("Skipping unsupported hosted LLM_PROVIDER=%s; using local-only policy", provider)
+        return LocalPolicyModel()
 
-    if provider in _GOOGLE_PROVIDERS:
-        if not settings.google_key:
-            logger.warning("GOOGLE_API_KEY or GEMINI_API_KEY is not set; using extractive fallback")
-            return LocalPolicyModel()
-        return GooglePolicyModel(
-            model=model_override or settings.google_model,
-            api_key=settings.google_key,
-            temperature=settings.google_temperature if temperature is None else temperature,
-            max_tokens=max_tokens or settings.google_max_output_tokens,
-        )
+    llm, decision = select_local_llm(
+        node=node,
+        provider=provider,
+        model_override=model_override,
+        temperature=temperature,
+        max_tokens=max_tokens,
+    )
+    if llm is not None:
+        return llm
 
-    if provider in _OLLAMA_PROVIDERS:
-        base_url = _ollama_base_url()
-        if not _ollama_server_available(base_url):
-            return LocalPolicyModel()
-
-        model = model_override or settings.ollama_model
-        try:
-            from langchain_community.llms import Ollama
-
-            kwargs = {"model": model, "temperature": temperature if temperature is not None else 0.0, "base_url": base_url}
-            if max_tokens is not None:
-                kwargs["num_predict"] = max_tokens
-            return Ollama(**kwargs)
-        except Exception as exc:
-            logger.warning("Local LLM unavailable, using extractive fallback: %s", exc)
-            return LocalPolicyModel()
-
-    logger.warning("Unknown LLM_PROVIDER=%s; using extractive fallback", provider)
-    return LocalPolicyModel()
+    fallback = LocalPolicyModel()
+    fallback.decision = decision.as_dict()
+    logger.warning("No configured local LLM runtime is available; using extractive fallback: %s", fallback.decision)
+    return fallback
 
 
-def invoke_llm(messages: list, model_override: Optional[str] = None, temperature: Optional[float] = None):
-    """Invoke the configured generation stack."""
-    llm = get_llm(model_override=model_override, temperature=temperature)
+def invoke_llm(
+    messages: list,
+    model_override: Optional[str] = None,
+    temperature: Optional[float] = None,
+    node: str = "generator",
+):
+    """Invoke the local generation stack selected for the current node."""
+    llm = get_llm(model_override=model_override, temperature=temperature, node=node)
     try:
-        return llm.invoke(messages)
+        response = llm.invoke(messages)
     except Exception as exc:
         logger.warning("Model call failed, using extractive fallback: %s", exc)
-        return LocalPolicyModel().invoke(messages)
+        fallback = LocalPolicyModel()
+        response = fallback.invoke(messages)
+
+    if not getattr(response, "model_decision", None):
+        response.model_decision = getattr(llm, "decision", {"provider": "extractive", "model": "extractive"})
+    return response

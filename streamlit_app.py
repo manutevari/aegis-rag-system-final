@@ -16,6 +16,7 @@ for path in [CURRENT_DIR, PARENT_DIR]:
 os.chdir(CURRENT_DIR)
 load_dotenv(os.path.join(CURRENT_DIR, ".env"))
 
+from app.core.runtime_config import apply_local_runtime_config, normalize_local_provider
 from app.core.stability_patch import safe_invoke
 from app.graph.workflow import build_graph
 from app.memory.memory_manager import MemoryManager
@@ -41,13 +42,6 @@ def load_graph():
     return build_graph()
 
 
-index_error = None
-try:
-    indexed_chunks = ensure_policy_index()
-except Exception as exc:
-    indexed_chunks = 0
-    index_error = str(exc)
-
 if "messages" not in st.session_state:
     st.session_state.messages = []
 if "cache" not in st.session_state:
@@ -57,13 +51,72 @@ if "memory" not in st.session_state:
 if "traces" not in st.session_state:
     st.session_state.traces = []
 
+_PROVIDER_LABELS = ["Local Auto", "Ollama", "llama.cpp", "Mistral Local", "Extractive"]
+_PROVIDER_VALUES = {
+    "Local Auto": "local_auto",
+    "Ollama": "ollama",
+    "llama.cpp": "llama_cpp",
+    "Mistral Local": "mistral_local",
+    "Extractive": "extractive",
+}
+_PROVIDER_INDEX = {"local_auto": 0, "ollama": 1, "llama_cpp": 2, "mistral_local": 3, "extractive": 4}
+
 with st.sidebar:
     st.title("🛡️ AEGIS Control")
     st.markdown("---")
+
+    initial_provider = normalize_local_provider(os.getenv("LLM_PROVIDER") or os.getenv("MODEL_PROVIDER") or "local_auto")
+    provider_label = st.selectbox(
+        "Local LLM Runtime",
+        _PROVIDER_LABELS,
+        index=_PROVIDER_INDEX.get(initial_provider, 0),
+    )
+    runtime_provider = _PROVIDER_VALUES[provider_label]
+
+    local_orchestration_model = st.text_input(
+        "Orchestration Model",
+        value=os.getenv("LOCAL_ORCHESTRATION_MODEL", "llama3.1"),
+    )
+    local_generation_model = st.text_input(
+        "Generation Model",
+        value=os.getenv("LOCAL_GENERATION_MODEL", "mistral"),
+    )
+
+    with st.expander("Local Runtime Endpoints", expanded=False):
+        ollama_base_url = st.text_input("Ollama URL", value=os.getenv("OLLAMA_BASE_URL", "http://localhost:11434"))
+        ollama_model = st.text_input("Ollama Model", value=os.getenv("OLLAMA_MODEL", "mistral"))
+        llama_cpp_base_url = st.text_input("llama.cpp URL", value=os.getenv("LLAMA_CPP_BASE_URL", "http://localhost:8080/v1"))
+        llama_cpp_model = st.text_input("llama.cpp Model", value=os.getenv("LLAMA_CPP_MODEL", "local-model"))
+        mistral_local_base_url = st.text_input(
+            "Mistral Local URL",
+            value=os.getenv("MISTRAL_LOCAL_BASE_URL", "http://localhost:8000/v1"),
+        )
+        mistral_local_model = st.text_input("Mistral Local Model", value=os.getenv("MISTRAL_LOCAL_MODEL", "mistral"))
+
+    runtime_model_config = apply_local_runtime_config(
+        runtime_provider,
+        ollama_base_url=ollama_base_url,
+        ollama_model=ollama_model,
+        llama_cpp_base_url=llama_cpp_base_url,
+        llama_cpp_model=llama_cpp_model,
+        mistral_local_base_url=mistral_local_base_url,
+        mistral_local_model=mistral_local_model,
+        local_orchestration_model=local_orchestration_model,
+        local_generation_model=local_generation_model,
+    )
+
     use_cache = st.toggle("Enable Secure Cache", True)
     debug_mode = st.toggle("Show System Trace", True)
 
+    index_error = None
+    try:
+        indexed_chunks = ensure_policy_index()
+    except Exception as exc:
+        indexed_chunks = 0
+        index_error = str(exc)
+
     st.caption(f"Policy chunks indexed: {indexed_chunks}")
+    st.caption(f"Runtime: {runtime_model_config['provider']}")
     if index_error:
         st.warning(f"Policy index not ready: {index_error}")
 
@@ -95,7 +148,7 @@ if query:
     with st.chat_message("assistant"):
         with st.spinner("Analyzing Knowledge Base..."):
             try:
-                cache_key = f"{grade_override}_{query}"
+                cache_key = f"{grade_override}_{runtime_model_config['provider']}_{query}"
                 cached = st.session_state.cache.get(cache_key) if use_cache else None
 
                 if cached:
