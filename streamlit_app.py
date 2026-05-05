@@ -4,6 +4,7 @@ import sys
 import types
 
 from aegis_enhancements import apply
+from deepseek_provider import apply_deepseek
 
 
 # Streamlit Cloud may have an OPENAI_API_KEY secret with no embedding quota.
@@ -18,4 +19,5 @@ aegis_app = importlib.util.module_from_spec(spec)
 assert spec and spec.loader
 spec.loader.exec_module(aegis_app)
 apply(aegis_app)
+apply_deepseek(aegis_app)
 aegis_app.main()
