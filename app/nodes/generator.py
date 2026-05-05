@@ -23,10 +23,45 @@ Rules:
 - If the answer is missing, say: "This is not covered in the available policy data."
 
 Format Requirements:
-- Use clear markdown formatting.
+- Use clear, polished markdown formatting.
+- Adapt the answer tone to the user sentiment supplied in the prompt.
 - Make numbers and key policy constraints easy to scan.
+- Include deterministic calculation results exactly when supplied.
+- Include a brief "Reasoning" section with source-grounded evidence, not hidden chain-of-thought.
 - End with a source line when source information is available.
 """
+
+_POSITIVE_WORDS = {"thanks", "thank", "great", "good", "happy", "excellent", "helpful", "clear", "perfect"}
+_NEGATIVE_WORDS = {
+    "angry",
+    "bad",
+    "confused",
+    "denied",
+    "frustrated",
+    "issue",
+    "problem",
+    "reject",
+    "rejected",
+    "urgent",
+    "worried",
+    "wrong",
+}
+
+
+def _sentiment_profile(query: str, state: AgentState) -> dict:
+    label = safe_get(state, "sentiment_label")
+    tone = safe_get(state, "sentiment_tone")
+    if label and tone:
+        return {"label": label, "tone": tone}
+
+    words = re.findall(r"[a-zA-Z']+", (query or "").lower())
+    positive = sum(1 for word in words if word in _POSITIVE_WORDS)
+    negative = sum(1 for word in words if word in _NEGATIVE_WORDS)
+    if negative > positive:
+        return {"label": "negative", "tone": "empathetic, calm, and reassuring"}
+    if positive > negative:
+        return {"label": "positive", "tone": "warm, confident, and concise"}
+    return {"label": "neutral", "tone": "clear, professional, and human"}
 
 
 def _format_answer(raw_answer: str) -> str:
@@ -90,6 +125,8 @@ def run(state: AgentState) -> AgentState:
     grade = safe_get(state, "employee_grade", "") or ""
     model_override = safe_get(state, "model")
     model_decision = {"provider": "extractive", "model": "extractive"}
+    sentiment = _sentiment_profile(query, state)
+    compute_summary = safe_get(state, "compute_summary", "") or ""
 
     if not _has_policy_documents(state):
         return trace(
@@ -114,8 +151,12 @@ def run(state: AgentState) -> AgentState:
                 "role": "user",
                 "content": (
                     f"POLICY CONTEXT:\n{context}\n\n"
+                    f"SENTIMENT: {sentiment['label']}\n"
+                    f"RESPONSE TONE: {sentiment['tone']}\n"
+                    f"DETERMINISTIC CALCULATION:\n{compute_summary or 'No deterministic calculation supplied.'}\n\n"
                     f"QUESTION: {query}{grade_note}\n\n"
-                    "Answer with markdown, source references, and exact values from context."
+                    "Answer with markdown, source references, exact values from context, "
+                    "and a short source-grounded Reasoning section."
                 ),
             }
         )
@@ -147,5 +188,5 @@ def run(state: AgentState) -> AgentState:
             retry=False,
         ),
         node="generate",
-        data={"len": len(answer), "model_decision": model_decision},
+        data={"len": len(answer), "model_decision": model_decision, "sentiment": sentiment},
     )
