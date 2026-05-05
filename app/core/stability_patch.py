@@ -3,9 +3,11 @@ Stability helpers for safe graph invocation and mixed state access.
 """
 
 import logging
+import os
 from typing import Any, Dict, Optional
 
 from app.state import AgentState, state_to_dict, to_state
+from app.tools.tavily_search import TAVILY_ENV, tavily_context_block, tavily_search
 
 logger = logging.getLogger(__name__)
 
@@ -59,15 +61,18 @@ def safe_invoke(graph, initial_state: Dict[str, Any]) -> Dict[str, Any]:
     try:
         sanitized_state = _sanitize_state(initial_state)
         result = graph.invoke(sanitized_state)
-
-        return {
+        payload = {
             "answer": safe_get(result, "answer", "No response generated"),
+            "context": safe_get(result, "context", ""),
+            "documents": safe_get(result, "documents", []),
             "route": safe_get(result, "route", "unknown"),
             "intent": safe_get(result, "intent", "unknown"),
             "sources": safe_get(result, "sources", []),
             "trace_log": safe_get(result, "trace_log", []),
             "error": safe_get(result, "error", ""),
         }
+
+        return _augment_with_tavily(payload, sanitized_state)
 
     except KeyError as e:
         logger.error("Missing required state key: %s", e, exc_info=True)
@@ -81,6 +86,8 @@ def safe_invoke(graph, initial_state: Dict[str, Any]) -> Dict[str, Any]:
 def _error_result(message: str, error: Exception) -> Dict[str, Any]:
     return {
         "answer": message,
+        "context": "",
+        "documents": [],
         "route": "error",
         "intent": "error",
         "sources": [],
@@ -114,3 +121,122 @@ def _sanitize_state(state: Any) -> Dict[str, Any]:
         raise ValueError("Query cannot be empty")
 
     return to_state(sanitized).to_dict()
+
+
+def _session_value(key: str, default: Any = None) -> Any:
+    try:
+        import streamlit as st
+
+        return st.session_state.get(key, default)
+    except Exception:
+        return default
+
+
+def _secret_or_env(names) -> str:
+    for name in names:
+        value = os.getenv(name)
+        if value:
+            return value
+    try:
+        import streamlit as st
+
+        for name in names:
+            value = st.secrets.get(name, "")
+            if value:
+                return value
+    except Exception:
+        pass
+    return ""
+
+
+def _tavily_controls() -> Dict[str, Any]:
+    api_key = _session_value("tavily_api_key") or _secret_or_env(TAVILY_ENV)
+    enabled_default = bool(api_key)
+    enabled = bool(_session_value("tavily_enabled", enabled_default))
+    try:
+        max_results = int(_session_value("tavily_max_results", 3) or 3)
+    except Exception:
+        max_results = 3
+    return {
+        "enabled": enabled,
+        "api_key": api_key,
+        "search_depth": _session_value("tavily_search_depth", "basic") or "basic",
+        "max_results": max(1, min(max_results, 10)),
+    }
+
+
+def _run_tavily(query: str) -> Dict[str, Any]:
+    controls = _tavily_controls()
+    if not controls["enabled"]:
+        return {
+            "enabled": False,
+            "status": "disabled",
+            "answer": "",
+            "results": [],
+            "sources": [],
+            "error": "",
+        }
+    if not controls["api_key"]:
+        return {
+            "enabled": True,
+            "status": "missing_key",
+            "answer": "",
+            "results": [],
+            "sources": [],
+            "error": "Tavily API key is not configured",
+        }
+    try:
+        return tavily_search(
+            query,
+            api_key=controls["api_key"],
+            search_depth=controls["search_depth"],
+            max_results=controls["max_results"],
+            include_answer="basic",
+        )
+    except Exception as exc:
+        logger.warning("Tavily search failed: %s", exc, exc_info=True)
+        return {
+            "enabled": True,
+            "status": "error",
+            "answer": "",
+            "results": [],
+            "sources": [],
+            "error": str(exc),
+        }
+
+
+def _augment_with_tavily(payload: Dict[str, Any], sanitized_state: Dict[str, Any]) -> Dict[str, Any]:
+    tavily_state = _run_tavily(sanitized_state.get("query", ""))
+    payload["tavily"] = tavily_state
+    payload["trace_log"] = list(payload.get("trace_log") or [])
+
+    if tavily_state.get("status") != "disabled":
+        payload["trace_log"].append(
+            {
+                "node": "tavily_search",
+                "data": {
+                    "enabled": tavily_state.get("enabled", False),
+                    "status": tavily_state.get("status", "unknown"),
+                    "results": len(tavily_state.get("results", [])),
+                    "sources": tavily_state.get("sources", []),
+                    "error": tavily_state.get("error", ""),
+                },
+            }
+        )
+
+    if tavily_state.get("enabled") and tavily_state.get("results"):
+        supplemental = (
+            "\n\n<tavily_context>\n"
+            "Supplementary web-search evidence from Tavily. Use only when it supports "
+            "the policy context, and never override corporate policy text with web data.\n"
+            f"{tavily_context_block(tavily_state)}\n"
+            "</tavily_context>"
+        )
+        payload["context"] = f"{payload.get('context', '')}{supplemental}"
+        sources = list(payload.get("sources") or [])
+        for source in tavily_state.get("sources", []):
+            if source and source not in sources:
+                sources.append(source)
+        payload["sources"] = sources
+
+    return payload
