@@ -15,10 +15,8 @@ def _rule_based_intent(query: str) -> str:
     if any(word in lower for word in ["hi", "hello", "how are you", "who are you"]):
         return "chat"
 
-    if any(word in lower for word in ["calculate", "total", "cost", "percent", "percentage"]):
-        return "compute"
-
-    if any(
+    compute_intent = any(word in lower for word in ["calculate", "total", "cost", "percent", "percentage", "%"])
+    policy_intent = any(
         word in lower
         for word in [
             "policy",
@@ -30,8 +28,19 @@ def _rule_based_intent(query: str) -> str:
             "travel",
             "leave",
             "security",
+            "claim",
+            "claims",
+            "deductible",
+            "coverage",
+            "premium",
+            "limit",
         ]
-    ):
+    )
+
+    if compute_intent and not policy_intent:
+        return "compute"
+
+    if policy_intent:
         return "rag"
 
     return "unclear"
