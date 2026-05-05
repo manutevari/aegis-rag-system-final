@@ -16,6 +16,7 @@ from typing import Any, Dict, Iterable, List, Optional, Tuple
 from langchain_core.documents import Document
 from langchain_community.document_loaders import Docx2txtLoader, PyPDFLoader, TextLoader
 
+from app.core.metadata import extract_metadata
 from app.core.vector_store import get_vectorstore, index_documents
 
 logger = logging.getLogger(__name__)
@@ -153,23 +154,32 @@ def _first_header(text: str, level: int) -> str:
 
 def _base_metadata(path: Path, root: Path, text: str) -> Dict[str, Any]:
     fields = _document_fields(text)
+    extracted = extract_metadata(text)
     source_path = path.as_posix()
     try:
         source_path = path.relative_to(root).as_posix()
     except ValueError:
         pass
 
-    h1_header = _first_header(text, 1) or path.stem
+    policy_category_label = extracted.get("policy_category") or "General"
+    policy_category = policy_category_label.lower()
+    if policy_category == "general":
+        policy_category = detect_category(path, text)
+
+    h1_header = extracted.get("h1_header") or _first_header(text, 1) or path.stem
+    h2_header = extracted.get("h2_header") or _first_header(text, 2) or DEFAULT_SECTION
     return {
         "source": path.name,
         "source_path": source_path,
-        "document_id": fields.get("document_id") or path.stem,
-        "policy_category": detect_category(path, text),
-        "policy_owner": fields.get("policy_owner") or "unknown",
-        "effective_date": fields.get("effective_date") or "unknown",
+        "document_id": fields.get("document_id") or extracted.get("document_id") or path.stem,
+        "policy_category": policy_category,
+        "policy_category_label": policy_category_label,
+        "policy_owner": fields.get("policy_owner") or extracted.get("policy_owner") or "Unknown",
+        "effective_date": fields.get("effective_date") or extracted.get("effective_date") or "2026-01-01",
         "last_revised": fields.get("last_revised") or "unknown",
         "applies_to": fields.get("applies_to") or "unknown",
         "h1_header": h1_header,
+        "h2_header": h2_header,
         "grade_level": detect_grade(path, text),
     }
 
@@ -203,11 +213,13 @@ def load_documents(
             metadata.setdefault("source_path", source)
             metadata.setdefault("document_id", metadata.get("policy_code") or source)
             metadata.setdefault("policy_category", detect_category(Path(source), text))
+            metadata.setdefault("policy_category_label", str(metadata.get("policy_category", "General")).title())
             metadata.setdefault("policy_owner", "sample")
-            metadata.setdefault("effective_date", "unknown")
+            metadata.setdefault("effective_date", "2026-01-01")
             metadata.setdefault("last_revised", "unknown")
             metadata.setdefault("applies_to", "all")
             metadata.setdefault("h1_header", metadata.get("document_id", source))
+            metadata.setdefault("h2_header", DEFAULT_SECTION)
             metadata.setdefault("grade_level", 3)
             documents.append(Document(page_content=text, metadata=metadata))
 
