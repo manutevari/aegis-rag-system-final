@@ -1,4 +1,5 @@
 import hashlib
+import json
 import os
 import re
 import sys
@@ -482,12 +483,17 @@ def compose_cloud_answer(
 ) -> str:
     context = result.get("context") or ""
     draft = result.get("answer") or ""
+    metadata_block = metadata_block_for_llm(result)
     compute_summary = compute_state.get("compute_summary") or "No deterministic computation was required."
     prompt = f"""You are the AEGIS policy response composer.
 
 <context>
 {context}
 </context>
+
+<source_metadata>
+{metadata_block}
+</source_metadata>
 
 <draft_answer>
 {draft}
@@ -502,8 +508,11 @@ Deterministic calculation: {compute_summary}
 Question: {query}
 
 Rules:
-- Answer ONLY from context, draft_answer, and verified tool_results.
+- Answer ONLY from context, source_metadata, draft_answer, and verified tool_results.
 - If the information is not present, say: "{STRICT_NOT_FOUND}"
+- Use source_metadata to keep document id, category, owner, effective date, and section attribution clear.
+- Treat each source_metadata record as a separate policy source; synthesize across sources only when context supports it.
+- If sources conflict, prefer the source with the latest effective_date and name the source used.
 - Use a {sentiment['tone']} tone.
 - Keep the answer human-like, concise, and well formatted in Markdown.
 - Preserve precise numeric values and calculation results exactly.
@@ -520,6 +529,50 @@ def sources_from_result(result: Dict[str, object]) -> List[str]:
             if source and source not in sources:
                 sources.append(source)
     return sources
+
+
+def metadata_records_for_llm(result: Dict[str, object]) -> List[Dict[str, object]]:
+    records: List[Dict[str, object]] = []
+    seen = set()
+    for doc in result.get("documents") or []:
+        if not isinstance(doc, dict):
+            continue
+        metadata = dict(doc.get("metadata") or {})
+        source = doc.get("source") or metadata.get("source") or metadata.get("source_path")
+        key = (
+            source,
+            metadata.get("document_id"),
+            metadata.get("section_path"),
+            metadata.get("chunk_index"),
+        )
+        if key in seen:
+            continue
+        seen.add(key)
+        records.append(
+            {
+                "source": source or "unknown",
+                "source_path": metadata.get("source_path", ""),
+                "document_id": metadata.get("document_id", ""),
+                "policy_category": metadata.get("policy_category_label")
+                or metadata.get("policy_category", ""),
+                "policy_owner": metadata.get("policy_owner", ""),
+                "effective_date": metadata.get("effective_date", ""),
+                "h1_header": metadata.get("h1_header", ""),
+                "h2_header": metadata.get("h2_header", ""),
+                "h3_header": metadata.get("h3_header", ""),
+                "section_path": metadata.get("section_path", ""),
+                "chunk_index": metadata.get("chunk_index", ""),
+                "rerank_score": doc.get("rerank_score", ""),
+            }
+        )
+    return records
+
+
+def metadata_block_for_llm(result: Dict[str, object]) -> str:
+    records = metadata_records_for_llm(result)
+    if not records:
+        return "[]"
+    return json.dumps(records, ensure_ascii=True, indent=2, default=str)
 
 
 def metadata_from_result(result: Dict[str, object]) -> List[Dict[str, object]]:
@@ -725,6 +778,21 @@ if query:
 
                     context = result.get("context") or ""
                     draft_answer = final_answer
+                    metadata_records = metadata_records_for_llm(result)
+                    metadata_document_ids = sorted(
+                        {
+                            str(record.get("document_id"))
+                            for record in metadata_records
+                            if record.get("document_id")
+                        }
+                    )
+                    metadata_sources = sorted(
+                        {
+                            str(record.get("source"))
+                            for record in metadata_records
+                            if record.get("source")
+                        }
+                    )
                     composer_accepted = False
                     for candidate_provider in candidate_chain:
                         if candidate_provider not in _CLOUD_PROVIDERS:
@@ -757,6 +825,9 @@ if query:
                                         "model": candidate_model,
                                         "status": "accepted" if is_relevant else "skipped",
                                         "reason": relevance_reason,
+                                        "metadata_records": len(metadata_records),
+                                        "metadata_document_ids": metadata_document_ids,
+                                        "metadata_sources": metadata_sources,
                                     },
                                 }
                             )
@@ -779,6 +850,9 @@ if query:
                                         "model": candidate_model,
                                         "status": "fallback",
                                         "reason": str(exc),
+                                        "metadata_records": len(metadata_records),
+                                        "metadata_document_ids": metadata_document_ids,
+                                        "metadata_sources": metadata_sources,
                                     },
                                 }
                             )
@@ -793,6 +867,9 @@ if query:
                                     "model": active_model,
                                     "status": "fallback",
                                     "reason": "no hosted provider returned a relevant answer",
+                                    "metadata_records": len(metadata_records),
+                                    "metadata_document_ids": metadata_document_ids,
+                                    "metadata_sources": metadata_sources,
                                 },
                             }
                         )
