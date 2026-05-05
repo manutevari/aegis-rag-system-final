@@ -11,14 +11,14 @@ import uuid
 from functools import lru_cache
 
 
-@lru_cache(maxsize=1)
-def _client():
+@lru_cache(maxsize=4)
+def _client(api_key: str):
     from openai import OpenAI
 
-    api_key = os.getenv("OPENAI_API_KEY", "")
-    if not api_key:
+    resolved_key = api_key or os.getenv("OPENAI_API_KEY", "")
+    if not resolved_key:
         raise RuntimeError("OPENAI_API_KEY is not configured")
-    return OpenAI(api_key=api_key)
+    return OpenAI(api_key=resolved_key, timeout=10.0, max_retries=0)
 
 
 _META_SYSTEM = textwrap.dedent(
@@ -70,10 +70,10 @@ def _fallback(data: dict, text: str) -> dict:
     }
 
 
-def extract_metadata(text: str) -> dict:
+def extract_metadata(text: str, api_key: str = "") -> dict:
     snippet = (text or "")[:3000]
     try:
-        resp = _client().chat.completions.create(
+        resp = _client(api_key).chat.completions.create(
             model="gpt-4o-mini",
             temperature=0,
             messages=[
@@ -84,7 +84,6 @@ def extract_metadata(text: str) -> dict:
         data = json.loads(resp.choices[0].message.content.strip())
     except Exception:
         data = {}
-
     return _fallback(data, text or "")
 
 
@@ -92,11 +91,7 @@ def extract_metadata_regex(text: str) -> dict:
     """Fast regex-only fallback - no LLM call needed."""
     text = text or ""
     doc_id_match = re.search(r"\b([A-Z]{2,6}-[A-Z]{2,5}-\d{4}-V\d+)\b", text)
-    date_match = re.search(
-        r"(?:effective|as of|dated?)[\s:]+(\d{4}-\d{2}-\d{2})",
-        text,
-        re.IGNORECASE,
-    )
+    date_match = re.search(r"(?:effective|as of|dated?)[\s:]+(\d{4}-\d{2}-\d{2})", text, re.IGNORECASE)
     owner_match = re.search(
         r"(?:owned by|maintained by|contact|policy owner)[\s:*]+([A-Z][A-Za-z\s\-]+?)[\n,.]",
         text,
@@ -106,15 +101,15 @@ def extract_metadata_regex(text: str) -> dict:
     h2_match = re.search(r"^## (.+)$", text, re.MULTILINE)
 
     text_lower = text.lower()
-    if any(w in text_lower for w in ["travel", "expense", "per diem", "flight"]):
+    if any(w in text_lower for w in ["travel", "expense", "per diem", "flight", "hotel", "taxi"]):
         category = "Travel"
-    elif any(w in text_lower for w in ["leave", "maternity", "hr policy", "employee"]):
+    elif any(w in text_lower for w in ["leave", "maternity", "hr policy", "employee", "pto", "sabbatical"]):
         category = "HR"
-    elif any(w in text_lower for w in ["finance", "budget", "reimbursement"]):
+    elif any(w in text_lower for w in ["finance", "budget", "reimbursement", "invoice"]):
         category = "Finance"
-    elif any(w in text_lower for w in ["legal", "contract", "compliance"]):
+    elif any(w in text_lower for w in ["legal", "contract", "compliance", "privacy"]):
         category = "Legal"
-    elif any(w in text_lower for w in ["it policy", "security", "vpn", "password", "device"]):
+    elif any(w in text_lower for w in ["it policy", "information technology", "security", "vpn", "password", "device"]):
         category = "IT"
     else:
         category = "General"
