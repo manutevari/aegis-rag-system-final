@@ -48,6 +48,7 @@ _PROVIDER_LABELS = [
     "Gemini",
     "Mistral",
     "OpenRouter",
+    "Hugging Face",
     "Ollama",
     "llama.cpp",
     "Mistral Local",
@@ -60,13 +61,14 @@ _PROVIDER_VALUES = {
     "Gemini": "gemini",
     "Mistral": "mistral",
     "OpenRouter": "openrouter",
+    "Hugging Face": "huggingface",
     "Ollama": "ollama",
     "llama.cpp": "llama_cpp",
     "Mistral Local": "mistral_local",
     "Extractive": "extractive",
 }
 _PROVIDER_INDEX = {value: index for index, value in enumerate(_PROVIDER_VALUES.values())}
-_CLOUD_PROVIDERS = {"openai", "grok", "gemini", "mistral", "openrouter"}
+_CLOUD_PROVIDERS = {"openai", "grok", "gemini", "mistral", "openrouter", "huggingface"}
 _LOCAL_PROVIDERS = {"ollama", "llama_cpp", "mistral_local", "extractive"}
 
 _PROVIDER_MODELS = {
@@ -76,10 +78,26 @@ _PROVIDER_MODELS = {
     "gemini": ["gemini-2.5-flash", "gemini-2.5-pro", "gemini-1.5-flash", "custom"],
     "mistral": ["mistral-medium-latest", "mistral-large-latest", "ministral-8b-latest", "custom"],
     "openrouter": ["openrouter/auto", "openai/gpt-4o-mini", "anthropic/claude-sonnet-4.5", "custom"],
+    "huggingface": [
+        "meta-llama/Llama-3.1-8B-Instruct:fastest",
+        "mistralai/Mistral-7B-Instruct-v0.3:fastest",
+        "Qwen/Qwen2.5-7B-Instruct:fastest",
+        "HuggingFaceH4/zephyr-7b-beta:fastest",
+        "custom",
+    ],
     "ollama": ["llama3.1", "llama3", "mistral", "custom"],
     "llama_cpp": ["local-model", "custom"],
     "mistral_local": ["mistral", "custom"],
     "extractive": ["Local retrieval only"],
+}
+
+_PROVIDER_DISPLAY_NAMES = {
+    "openai": "OpenAI",
+    "grok": "Grok (xAI)",
+    "gemini": "Gemini",
+    "mistral": "Mistral",
+    "openrouter": "OpenRouter",
+    "huggingface": "Hugging Face",
 }
 
 _PROVIDER_ENV = {
@@ -88,6 +106,7 @@ _PROVIDER_ENV = {
     "gemini": ["GEMINI_API_KEY", "GOOGLE_API_KEY"],
     "mistral": ["MISTRAL_API_KEY"],
     "openrouter": ["OPENROUTER_API_KEY"],
+    "huggingface": ["HF_API_KEY", "HF_TOKEN", "HUGGINGFACEHUB_API_TOKEN", "HUGGINGFACE_API_KEY"],
 }
 
 _OPENAI_COMPATIBLE_BASE_URLS = {
@@ -95,6 +114,35 @@ _OPENAI_COMPATIBLE_BASE_URLS = {
     "grok": "https://api.x.ai/v1",
     "mistral": "https://api.mistral.ai/v1",
     "openrouter": "https://openrouter.ai/api/v1",
+    "huggingface": "https://router.huggingface.co/v1",
+}
+
+_STOPWORDS = {
+    "about",
+    "after",
+    "again",
+    "also",
+    "answer",
+    "because",
+    "before",
+    "could",
+    "from",
+    "have",
+    "into",
+    "only",
+    "policy",
+    "question",
+    "should",
+    "that",
+    "their",
+    "there",
+    "this",
+    "what",
+    "when",
+    "where",
+    "which",
+    "with",
+    "would",
 }
 
 _POSITIVE_WORDS = {
@@ -237,20 +285,96 @@ def compute_query(query: str) -> Dict[str, object]:
     return compute({"query": query, "trace_log": []})
 
 
-def choose_auto_provider(sentiment: Dict[str, object], compute_state: Dict[str, object]) -> str:
+def rank_auto_providers(sentiment: Dict[str, object], compute_state: Dict[str, object]) -> List[str]:
     candidates = {
-        "negative": ["grok", "openai", "gemini", "openrouter", "mistral"],
-        "positive": ["gemini", "openai", "grok", "openrouter", "mistral"],
-        "neutral": ["openai", "grok", "gemini", "mistral", "openrouter"],
-    }.get(str(sentiment.get("label")), ["openai", "grok", "gemini", "mistral", "openrouter"])
+        "negative": ["grok", "openai", "gemini", "huggingface", "openrouter", "mistral"],
+        "positive": ["gemini", "openai", "huggingface", "grok", "openrouter", "mistral"],
+        "neutral": ["openai", "huggingface", "grok", "gemini", "mistral", "openrouter"],
+    }.get(
+        str(sentiment.get("label")),
+        ["openai", "huggingface", "grok", "gemini", "mistral", "openrouter"],
+    )
 
     if compute_state.get("compute_result") is not None:
-        candidates = ["openai", "grok", "gemini", "mistral", "openrouter"]
+        candidates = ["openai", "grok", "gemini", "mistral", "openrouter", "huggingface"]
 
-    for provider in candidates:
+    return candidates
+
+
+def choose_auto_provider(sentiment: Dict[str, object], compute_state: Dict[str, object]) -> str:
+    for provider in rank_auto_providers(sentiment, compute_state):
         if _provider_key(provider):
             return provider
     return "extractive"
+
+
+def provider_candidate_chain(
+    selected_provider: str,
+    sentiment: Dict[str, object],
+    compute_state: Dict[str, object],
+) -> List[str]:
+    if selected_provider == "auto_sentiment":
+        candidates = rank_auto_providers(sentiment, compute_state)
+    elif selected_provider in _CLOUD_PROVIDERS:
+        fallback_order = ["openai", "grok", "gemini", "huggingface", "mistral", "openrouter"]
+        candidates = [selected_provider] + [provider for provider in fallback_order if provider != selected_provider]
+    else:
+        return [selected_provider]
+
+    available = []
+    for provider in candidates:
+        if _provider_key(provider):
+            available.append(provider)
+    return available or ["extractive"]
+
+
+def default_model_for(provider: str) -> str:
+    return _PROVIDER_MODELS.get(provider, ["Local retrieval only"])[0]
+
+
+def content_tokens(text: str) -> set:
+    return {
+        word
+        for word in re.findall(r"[a-zA-Z][a-zA-Z0-9'-]{3,}", text.lower())
+        if word not in _STOPWORDS
+    }
+
+
+def answer_is_relevant(answer: str, query: str, context: str, draft: str) -> Tuple[bool, str]:
+    cleaned = (answer or "").strip()
+    if len(cleaned) < 8:
+        return False, "empty or too short"
+
+    lower_answer = cleaned.lower()
+    lower_draft = (draft or "").lower()
+    strict_lower = STRICT_NOT_FOUND.lower()
+    failure_phrases = [
+        "i do not have access",
+        "i don't have access",
+        "no context provided",
+        "outside the provided context",
+    ]
+    if any(phrase in lower_answer for phrase in failure_phrases):
+        return False, "model ignored or missed supplied context"
+
+    if strict_lower in lower_answer:
+        if strict_lower in lower_draft or not (context or "").strip():
+            return True, "not-found answer matches retrieved evidence"
+        return False, "model returned not-found despite retrieved evidence"
+
+    if strict_lower in lower_draft and not (context or "").strip():
+        return False, "draft and context did not support an answer"
+
+    answer_tokens = content_tokens(cleaned)
+    context_tokens = content_tokens(context)
+    query_tokens = content_tokens(query)
+    shared_context = len(answer_tokens & context_tokens)
+    shared_query = len(answer_tokens & query_tokens)
+
+    if context_tokens and shared_context < 2 and shared_query < 1:
+        return False, "low overlap with retrieved policy context"
+
+    return True, "accepted"
 
 
 def selected_model(provider: str) -> str:
@@ -264,8 +388,9 @@ def selected_model(provider: str) -> str:
 def render_provider_key(provider: str) -> None:
     if provider not in _CLOUD_PROVIDERS:
         return
+    provider_name = _PROVIDER_DISPLAY_NAMES.get(provider, provider.title())
     st.text_input(
-        "API Key",
+        f"{provider_name} API Key",
         type="password",
         key=f"{provider}_api_key",
         help=f"Uses {' or '.join(_PROVIDER_ENV[provider])} if this field is blank.",
@@ -397,6 +522,38 @@ def sources_from_result(result: Dict[str, object]) -> List[str]:
     return sources
 
 
+def metadata_from_result(result: Dict[str, object]) -> List[Dict[str, object]]:
+    records: List[Dict[str, object]] = []
+    seen = set()
+    for doc in result.get("documents") or []:
+        if not isinstance(doc, dict):
+            continue
+        metadata = dict(doc.get("metadata") or {})
+        source = doc.get("source") or metadata.get("source") or metadata.get("source_path")
+        key = (
+            source,
+            metadata.get("document_id"),
+            metadata.get("h1_header"),
+            metadata.get("h2_header"),
+        )
+        if key in seen:
+            continue
+        seen.add(key)
+        records.append(
+            {
+                "source": source or "unknown",
+                "document_id": metadata.get("document_id", ""),
+                "policy_category": metadata.get("policy_category_label")
+                or metadata.get("policy_category", ""),
+                "policy_owner": metadata.get("policy_owner", ""),
+                "effective_date": metadata.get("effective_date", ""),
+                "h1_header": metadata.get("h1_header", ""),
+                "h2_header": metadata.get("h2_header", ""),
+            }
+        )
+    return records
+
+
 def trace_rows(result: Dict[str, object], sentiment: Dict[str, object], provider: str, model: str, compute_state: Dict[str, object]):
     rows = [
         {"node": "sentiment", "status": sentiment["label"], "detail": sentiment["tone"]},
@@ -459,9 +616,10 @@ with st.sidebar:
     if selected_provider == "auto_sentiment":
         selected_model_name = "Auto choose"
         with st.expander("Cloud API Keys", expanded=False):
-            for cloud_provider in ["openai", "grok", "gemini", "mistral", "openrouter"]:
+            for cloud_provider in ["openai", "grok", "gemini", "huggingface", "mistral", "openrouter"]:
+                provider_name = _PROVIDER_DISPLAY_NAMES.get(cloud_provider, cloud_provider.title())
                 st.text_input(
-                    f"{cloud_provider.title()} API Key",
+                    f"{provider_name} API Key",
                     type="password",
                     key=f"{cloud_provider}_api_key",
                     help=f"Uses {' or '.join(_PROVIDER_ENV[cloud_provider])} if blank.",
@@ -529,18 +687,15 @@ if query:
             try:
                 sentiment = analyze_sentiment(query)
                 compute_state = compute_query(query)
-                active_provider = (
-                    choose_auto_provider(sentiment, compute_state)
-                    if selected_provider == "auto_sentiment"
-                    else selected_provider
-                )
+                candidate_chain = provider_candidate_chain(selected_provider, sentiment, compute_state)
+                active_provider = candidate_chain[0] if candidate_chain else selected_provider
                 active_model = (
-                    _PROVIDER_MODELS.get(active_provider, ["Local retrieval only"])[0]
-                    if selected_provider == "auto_sentiment"
+                    default_model_for(active_provider)
+                    if selected_provider == "auto_sentiment" or active_provider != selected_provider
                     else selected_model_name
                 )
 
-                cache_key = f"{grade_override}_{active_provider}_{active_model}_{_payload_fingerprint(uploaded_files)}_{query}"
+                cache_key = f"{grade_override}_{selected_provider}_{selected_model_name}_{','.join(candidate_chain)}_{_payload_fingerprint(uploaded_files)}_{query}"
                 cached = st.session_state.cache.get(cache_key) if use_cache else None
 
                 if cached:
@@ -568,14 +723,79 @@ if query:
                     result = safe_invoke(graph, initial_state)
                     final_answer = result.get("answer", "I'm sorry, I couldn't find relevant information.")
 
-                    if active_provider in _CLOUD_PROVIDERS:
+                    context = result.get("context") or ""
+                    draft_answer = final_answer
+                    composer_accepted = False
+                    for candidate_provider in candidate_chain:
+                        if candidate_provider not in _CLOUD_PROVIDERS:
+                            continue
+                        candidate_model = (
+                            selected_model_name
+                            if candidate_provider == selected_provider and selected_provider != "auto_sentiment"
+                            else default_model_for(candidate_provider)
+                        )
                         try:
-                            final_answer = compose_cloud_answer(active_provider, active_model, query, result, sentiment, compute_state)
+                            candidate_answer = compose_cloud_answer(
+                                candidate_provider,
+                                candidate_model,
+                                query,
+                                result,
+                                sentiment,
+                                compute_state,
+                            )
+                            is_relevant, relevance_reason = answer_is_relevant(
+                                candidate_answer,
+                                query,
+                                context,
+                                draft_answer,
+                            )
+                            result.setdefault("trace_log", []).append(
+                                {
+                                    "node": "cloud_composer",
+                                    "data": {
+                                        "provider": candidate_provider,
+                                        "model": candidate_model,
+                                        "status": "accepted" if is_relevant else "skipped",
+                                        "reason": relevance_reason,
+                                    },
+                                }
+                            )
+                            if not is_relevant:
+                                continue
+                            final_answer = candidate_answer
+                            active_provider = candidate_provider
+                            active_model = candidate_model
+                            composer_accepted = True
                             result["answer"] = final_answer
                             result["model_provider"] = active_provider
                             result["model"] = active_model
+                            break
                         except Exception as exc:
-                            result.setdefault("trace_log", []).append(f"cloud composer fallback: {exc}")
+                            result.setdefault("trace_log", []).append(
+                                {
+                                    "node": "cloud_composer",
+                                    "data": {
+                                        "provider": candidate_provider,
+                                        "model": candidate_model,
+                                        "status": "fallback",
+                                        "reason": str(exc),
+                                    },
+                                }
+                            )
+                    if not composer_accepted and any(provider in _CLOUD_PROVIDERS for provider in candidate_chain):
+                        active_provider = "extractive"
+                        active_model = default_model_for("extractive")
+                        result.setdefault("trace_log", []).append(
+                            {
+                                "node": "cloud_composer",
+                                "data": {
+                                    "provider": "extractive",
+                                    "model": active_model,
+                                    "status": "fallback",
+                                    "reason": "no hosted provider returned a relevant answer",
+                                },
+                            }
+                        )
 
                     if use_cache and final_answer and result.get("route") != "error":
                         st.session_state.cache.set(cache_key, encrypt(final_answer))
@@ -596,6 +816,11 @@ if query:
                         st.write(f"- {source}")
                 else:
                     st.write("- No source metadata returned")
+
+                source_metadata = metadata_from_result(result)
+                if source_metadata:
+                    with st.expander("Source Metadata", expanded=False):
+                        st.dataframe(source_metadata, use_container_width=True)
 
                 st.markdown("### Response Context")
                 st.info(f"Tone: {sentiment['tone']} | Provider: {active_provider} | Model: {active_model}")
