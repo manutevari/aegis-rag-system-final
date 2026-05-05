@@ -14,14 +14,14 @@ from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 from langchain_core.documents import Document
-from langchain_community.document_loaders import PyPDFLoader, TextLoader
+from langchain_community.document_loaders import Docx2txtLoader, PyPDFLoader, TextLoader
 
 from app.core.vector_store import get_vectorstore, index_documents
 
 logger = logging.getLogger(__name__)
 
 DATA_PATH = os.getenv("POLICY_DIR", "data")
-SUPPORTED_EXTENSIONS = {".txt", ".md", ".pdf"}
+SUPPORTED_EXTENSIONS = {".txt", ".md", ".pdf", ".docx"}
 DEFAULT_CHUNK_TOKENS = 450
 DEFAULT_TABLE_ROW_CHUNK = 18
 DEFAULT_OVERLAP_RATIO = 0.12
@@ -113,6 +113,8 @@ def _load_text(path: Path) -> List[Document]:
 def _load_file(path: Path) -> List[Document]:
     if path.suffix.lower() == ".pdf":
         return PyPDFLoader(str(path)).load()
+    if path.suffix.lower() == ".docx":
+        return Docx2txtLoader(str(path)).load()
     return _load_text(path)
 
 
