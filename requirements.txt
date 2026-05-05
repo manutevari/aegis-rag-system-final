@@ -22,6 +22,7 @@ ollama>=0.3.0
 
 # Documents
 pypdf>=4.0.0
+docx2txt>=0.8
 
 # App / API
 streamlit>=1.36.0
