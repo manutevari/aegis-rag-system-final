@@ -6,7 +6,7 @@ from typing import Dict, List, Optional
 
 import requests
 
-TAVILY_ENV = ["TAVILY_API_KEY", "TAVILY_KEY"]
+TAVILY_ENV = ["tavily_key", "TAVILY_API_KEY", "TAVILY_KEY"]
 TAVILY_SEARCH_URL = "https://api.tavily.com/search"
 
 
